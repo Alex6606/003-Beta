@@ -4,89 +4,53 @@
 import numpy as np
 import pandas as pd
 
-# Mapea {0: short, 1: hold, 2: long} -> {-1, 0, +1}
-def y_to_signal(y_pred: np.ndarray) -> pd.Series:
-    mapping = {0: -1, 1: 0, 2: 1}
-    sig = pd.Series([mapping[int(v)] for v in y_pred], dtype=int)
-    return sig
+def y_to_signal(y_pred):
+    # mapea clases {0,1,2} -> {-1, 0, +1}
+    # 0 = DOWN -> short (-1), 1 = HOLD -> 0, 2 = UP -> long (+1)
+    y_pred = np.asarray(y_pred).ravel()
+    mapping = {0: -1, 1: 0, 2: +1}
+    return np.vectorize(mapping.get)(y_pred)
 
-def backtest_simple(
-    close: pd.Series,
-    idx_exec: pd.Index,     # Índices (fechas) de tus predicciones (TEST), idealmente seq_bundle["test"]["idx"]
-    signals: pd.Series,     # Serie {-1,0,1} indexada igual que idx_exec
-    commission=0.00125,     # 0.125%
-    borrow_rate_annual=0.0025,  # 0.25% anual
-    tz_days=252
-) -> dict:
+def backtest_simple(close: "pd.Series", idx: "pd.Index", signal: np.ndarray,
+                    fee=0.00125, borrow_rate_annual=0.0025, freq=252):
     """
-    Backtest long/short/flat:
-      - Entra al SIGUIENTE bar (shift(1)) para evitar look-ahead.
-      - Costos de comisión cuando hay cambio de posición (turnover).
-      - Borrow-fee diario cuando estás en short.
+    Backtest vectorizado ultrabásico:
+      - Retorno diario = pos_{t-1} * r_t
+      - Coste por cambio de posición (turnover * fee)
+      - Borrow cost si pos < 0 (prorrateado por día)
     """
-    signals = signals.astype(int)
-    signals.index = idx_exec
+    import pandas as pd
+    sig = pd.Series(signal, index=idx).astype(float)
+    sig = sig.reindex(close.index).fillna(0.0)
 
-    # Alinear precios y calcular rendimientos diarios
-    px = close.reindex(idx_exec).astype(float)
-    ret = px.pct_change().fillna(0.0)
+    r = close.pct_change().fillna(0.0)
+    pos = sig.shift(1).fillna(0.0)
 
-    # Sin look-ahead: ejecutas con la señal previa
-    sig_exec = signals.shift(1).reindex(ret.index).fillna(0).astype(int)
+    # costes
+    turnover = (pos - pos.shift(1).fillna(0.0)).abs()
+    trading_cost = turnover * fee
+    borrow_daily = borrow_rate_annual / freq
+    borrow_cost = borrow_daily * (pos < 0).astype(float).abs()
 
-    # Rendimiento bruto de la estrategia
-    strat_gross = sig_exec * ret
+    strat_ret = pos * r - trading_cost - borrow_cost
+    eq = (1.0 + strat_ret).cumprod()
 
-    # Comisión cuando cambias de posición (|Δpos|)
-    turns = sig_exec.diff().abs().fillna(0)
-    # Costo proporcional ~ comisión * |Δpos| (asume 1x nocional)
-    cost_comm = commission * turns
-
-    # Borrow fee solo en posiciones short
-    borrow_daily = borrow_rate_annual / tz_days
-    cost_borrow = borrow_daily * (sig_exec == -1).astype(float)
-
-    # Rendimiento neto
-    strat_net = strat_gross - cost_comm - cost_borrow
-
-    # Equity
-    equity = (1.0 + strat_net).cumprod()
-
-    # Métricas
-    mu = strat_net.mean() * tz_days
-    sd = strat_net.std(ddof=0) * np.sqrt(tz_days)
-    sharpe = mu / (sd + 1e-12)
-
-    downside = strat_net.copy()
-    downside[downside > 0] = 0.0
-    dd_std = downside.std(ddof=0) * np.sqrt(tz_days)
-    sortino = mu / (dd_std + 1e-12)
-
-    # Max Drawdown / Calmar
-    roll_max = equity.cummax()
-    drawdown = equity / roll_max - 1.0
-    mdd = drawdown.min()
-    # Asume retorno anualizado ~ mu (aprox), Calmar = mu / |mdd|
-    calmar = (mu / abs(mdd)) if mdd < 0 else np.nan
-
-    # Stats de trades (cambios de régimen)
-    trades = int(turns.sum())
-    win_rate = float((strat_net[strat_net != 0] > 0).mean()) if (strat_net != 0).any() else np.nan
+    # métricas rápidas
+    mu = strat_ret.mean() * freq
+    sigma = strat_ret.std(ddof=1) * np.sqrt(freq)
+    sharpe = mu / sigma if sigma > 0 else 0.0
+    mdd = (eq / eq.cummax() - 1.0).min()
 
     return {
         "series": {
-            "ret_net": strat_net,
-            "equity": equity,
-            "signals_exec": sig_exec,
+            "returns": strat_ret,
+            "equity": eq
         },
         "metrics": {
-            "ann_return": mu,
-            "ann_vol": sd,
-            "sharpe": sharpe,
-            "sortino": sortino,
-            "max_drawdown": float(mdd),
-            "calmar": float(calmar),
-            "trades": trades,
-            "win_rate": win_rate,
+            "CAGR": float(eq.iloc[-1] ** (freq / max(len(eq), 1)) - 1.0),
+            "Sharpe": float(sharpe),
+            "MaxDrawdown": float(mdd),
+            "AnnualVol": float(sigma),
+            "WinRate": float((strat_ret > 0).mean())
         }
     }

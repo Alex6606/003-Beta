@@ -90,9 +90,11 @@ def train_eval_from_raw(
     gamma=1.2, seq_window=60, seq_step=1,
     epochs_warmup=18, epochs_finetune=12, batch_size=64,
     label_smoothing=0.02, lambda_kl=0.05, kl_temperature=1.5, tau_la=0.6,
-    shrink_lambda=0.85, verbose=1
+    shrink_lambda=0.85, verbose=1,
+    # 👇 nuevos parámetros para backtest
+    close_series=None, train_idx=None, val_idx=None, test_idx=None
 ):
-    """Construye secuencias y lanza entrenamiento/evaluación completa."""
+    """Construye secuencias y lanza entrenamiento/evaluación completa (con soporte para backtesting)."""
     seq_bundle = build_cnn_sequences_for_splits(
         X_train, y_train, X_test, y_test, X_val, y_val,
         window=seq_window, step=seq_step
@@ -121,7 +123,12 @@ def train_eval_from_raw(
         kl_temperature=kl_temperature,
         tau_la=tau_la,
         shrink_lambda=shrink_lambda,
-        verbose=verbose
+        verbose=verbose,
+        # 👇 pasa los datos necesarios al backtest
+        close_series=close_series,
+        train_idx=train_idx,
+        val_idx=val_idx,
+        test_idx=test_idx
     )
     return res
 
@@ -143,14 +150,16 @@ def train_eval_one_config(
     # TILT / SHRINK / BIAS
     shrink_lambda: float = 0.85,
     bias_grids: Dict[str, np.ndarray] = None,
+    # datos para backtest
+    close_series=None,
+    train_idx=None, val_idx=None, test_idx=None,
     # verbosidad
     verbose: int = 1
 ) -> Dict[str, Any]:
     """
-    Devuelve: dict con cfg, histories, métricas (TEST y VAL), confusiones,
-    predicciones y artefactos (T, priors, thresholds, bias, etc.)
-    Imprime en orden TEST → VAL.
+    Versión extendida con backtesting sobre train/val/test.
     """
+    # --- Modelo base ---
     if model_builder_kwargs is None:
         model_builder_kwargs = dict(
             n_features=Xtr_seq.shape[-1], window=Xtr_seq.shape[1],
@@ -165,10 +174,9 @@ def train_eval_one_config(
             grid_d2=np.linspace(0.0, 0.25, 5),
         )
 
-    # 1) Modelo
     model = build_cnn_1d_logits(**model_builder_kwargs)
 
-    # 2) Entrenamiento two-phase
+    # --- Entrenamiento ---
     model, history = train_two_phase_v4(
         model,
         Xtr_seq, ytr_seq, Xva_seq, yva_seq,
@@ -188,7 +196,7 @@ def train_eval_one_config(
         reduce_on_plateau=True
     )
 
-    # 3) Calibración de temperatura (en VAL, sin leakage)
+    # --- Calibración ---
     logits_val  = model.predict(Xva_seq, verbose=0)
     logits_test = model.predict(Xte_seq, verbose=0)
     T = find_temperature(logits_val, yva_seq)
@@ -198,181 +206,119 @@ def train_eval_one_config(
     proba_val  = softmax_T(logits_val,  T)
     proba_test = softmax_T(logits_test, T)
 
-    # 4) Thresholds base (VAL) + refinado coordinado
-    thr0 = tune_thresholds_by_class(
-        yva_seq, proba_val,
-        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0)
-    )
+    # --- Threshold tuning ---
+    thr0 = tune_thresholds_by_class(yva_seq, proba_val,
+        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0))
     thr_refined, best_val_macro = coordinate_ascent_thresholds(
         yva_seq, proba_val, thr0,
-        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0),
-        rounds=2
-    )
+        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0), rounds=2)
     if verbose:
         print("Umbrales base (VAL):", np.round(thr_refined, 3), "| macroF1_VAL:", round(best_val_macro, 4))
 
-    # 5) BBSE-soft (priors TEST) + logit-adjust en TEST
+    # --- Prior shift (BBSE) ---
     pi_test_bbse, C = bbse_prior_shift_soft(
-        pi_train, yva_seq, proba_val, proba_test,
-        lam_ridge=1e-2, eps=1e-6
-    )
-    if verbose:
-        print("pi_test_est (BBSE-soft):", np.round(pi_test_bbse, 3))
-
-    logit_shift     = np.log(np.clip(pi_test_bbse, 1e-6, 1.0)) - np.log(np.clip(pi_train, 1e-6, 1.0))
+        pi_train, yva_seq, proba_val, proba_test, lam_ridge=1e-2, eps=1e-6)
+    logit_shift = np.log(np.clip(pi_test_bbse, 1e-6, 1.0)) - np.log(np.clip(pi_train, 1e-6, 1.0))
     logits_test_adj = logits_test + logit_shift.reshape(1, -1)
     proba_test_bbse = softmax_T(logits_test_adj, T)
 
-    # 6) Tilt thresholds (re-sintoniza thresholds en VAL con prior de TEST)
+    # --- Tilt thresholds ---
     w_ratio = (pi_test_bbse / np.clip(pi_train, 1e-6, 1.0)).reshape(1, -1)
     proba_val_tilt = proba_val * w_ratio
     proba_val_tilt /= proba_val_tilt.sum(axis=1, keepdims=True)
     thr0_tilt = tune_thresholds_by_class(
         yva_seq, proba_val_tilt,
-        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0)
-    )
-    thr_refined_tilt, best_val_macro_tilt = coordinate_ascent_thresholds(
+        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0))
+    thr_refined_tilt, _ = coordinate_ascent_thresholds(
         yva_seq, proba_val_tilt, thr0_tilt,
-        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0),
-        rounds=2
-    )
-    if verbose:
-        print("Umbrales tilt (VAL):", np.round(thr_refined_tilt, 3),
-              "| macroF1_VAL(tilt):", round(best_val_macro_tilt, 4))
+        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0), rounds=2)
 
-    # 7) Shrink thresholds para TEST
-    thr_test = shrink_lambda * np.array([1/3, 1/3, 1/3], float) + (1 - shrink_lambda) * thr_refined_tilt
-
-    # 8) Bias search en VAL (sobre thresholds tilt)
+    # --- Bias search ---
     best_val_score, best_bias = search_logit_biases(
         logits_val, yva_seq, thr_refined_tilt, T=T,
-        grid_d0=bias_grids["grid_d0"],
-        grid_d1=bias_grids["grid_d1"],
-        grid_d2=bias_grids["grid_d2"],
-    )
-    if verbose:
-        print("Best bias on VAL:", tuple(float(f"{x:.3f}") for x in best_bias),
-              " macroF1_VAL:", round(best_val_score, 4))
+        grid_d0=bias_grids["grid_d0"], grid_d1=bias_grids["grid_d1"], grid_d2=bias_grids["grid_d2"])
 
-    # 9) Pred final en TEST (BBSE-soft → bias → thresholds shrink)
+    # --- Predicciones finales (TEST y VAL) ---
     logits_test_bbse_bias = logits_test_adj + np.array(best_bias, float).reshape(1, -1)
-    proba_test_final      = softmax_T(logits_test_bbse_bias, T)
-    yte_hat_final         = apply_thresholds(proba_test_final, thr_test)
+    proba_test_final = softmax_T(logits_test_bbse_bias, T)
+    yte_hat_final = apply_thresholds(proba_test_final, thr_refined_tilt)
 
-    # ==== Métricas y matrices TEST (imprime primero TEST) ====
-    m_test, cm_test = _metrics_and_confusion(yte_seq, yte_hat_final)
-    pred_dist_test  = _pred_dist(yte_hat_final)
-    if verbose:
-        print("\n[TEST] -------")
-        _print_metrics_block("TEST (FINAL)", m_test)
-        _print_cm_block("Matriz de confusión (TEST, FINAL):", cm_test, pred_dist_test)
-
-    # 10) Pred en VAL (orden simétrico)
     logits_val_bias = logits_val + np.array(best_bias, float).reshape(1, -1)
     proba_val_final = softmax_T(logits_val_bias, T)
     yva_hat_final   = apply_thresholds(proba_val_final, thr_refined_tilt)
-    m_val, cm_val   = _metrics_and_confusion(yva_seq, yva_hat_final)
-    pred_dist_val   = _pred_dist(yva_hat_final)
 
-    if verbose:
-        print("\n[VAL] --------")
-        _print_metrics_block("VAL  (FINAL)", m_val)
-        _print_cm_block("Matriz de confusión (VAL,  FINAL):", cm_val, pred_dist_val)
+    # --- Backtest simple ---
+    def run_backtest(y_pred, prices):
+        """
+        Backtest básico con señales del modelo.
+        Señales: 2=long, 1=hold, 0=short
+        Retorno: equity curve y métricas simples
+        """
+        signals = np.array(y_pred)
+        prices = np.array(prices)
 
-    # === Baselines ===
-    yte_hat_argmax = proba_test.argmax(1)
-    yva_hat_argmax = proba_val.argmax(1)
-    m_test_base,  cm_test_base  = _metrics_and_confusion(yte_seq, yte_hat_argmax)
-    m_val_base,   cm_val_base   = _metrics_and_confusion(yva_seq, yva_hat_argmax)
+        # Calcula rendimientos simples
+        rets = np.diff(prices) / prices[:-1]
 
-    yte_hat_thr_base = apply_thresholds(proba_test, thr_refined)
-    yva_hat_thr_base = apply_thresholds(proba_val,  thr_refined)
-    m_test_thr_base, cm_test_thr_base = _metrics_and_confusion(yte_seq, yte_hat_thr_base)
-    m_val_thr_base,  cm_val_thr_base  = _metrics_and_confusion(yva_seq, yva_hat_thr_base)
+        # --- Alinea longitudes automáticamente ---
+        n = min(len(rets), len(signals) - 1)
+        rets = rets[-n:]
+        sigs = signals[-n - 1:-1]  # usa señales previas al retorno
 
-    if verbose:
-        _print_metrics_block("TEST argmax (T, BASE)", m_test_base)
-        _print_cm_block("Matriz (TEST, argmax T, BASE):", cm_test_base, _pred_dist(yte_hat_argmax))
-        _print_metrics_block("TEST thresholded (BASE)", m_test_thr_base)
-        _print_cm_block("Matriz (TEST, thresholded BASE):", cm_test_thr_base, _pred_dist(yte_hat_thr_base))
-        _print_metrics_block("VAL  argmax (T, BASE)", m_val_base)
-        _print_cm_block("Matriz (VAL, argmax T, BASE):", cm_val_base, _pred_dist(yva_hat_argmax))
-        _print_metrics_block("VAL  thresholded (BASE)", m_val_thr_base)
-        _print_cm_block("Matriz (VAL, thresholded BASE):", cm_val_thr_base, _pred_dist(yva_hat_thr_base))
-        print(f"\nF1-macro  TEST: {m_test['macro_f1']:.3f} | VAL: {m_val['macro_f1']:.3f}")
-        print(f"Acc       TEST: {m_test['acc']:.3f}   | VAL: {m_val['acc']:.3f}")
+        # Convierte señales a posiciones: long=1, short=-1, hold=0
+        pos = np.where(sigs == 2, 1, np.where(sigs == 0, -1, 0))
 
-    # === Empaque ===
+        # Rendimientos de la estrategia
+        strat_rets = rets * pos
+        equity = (1 + strat_rets).cumprod()
+
+        # Métricas simples
+        mean_ret = np.mean(strat_rets)
+        std_ret = np.std(strat_rets) + 1e-8
+        sharpe = (mean_ret / std_ret) * np.sqrt(252)
+
+        return {
+            "final_return": float(equity[-1] - 1),
+            "sharpe": float(sharpe),
+            "equity": equity
+        }
+
+    backtest_results = {}
+    if close_series is not None:
+        for split_name, idx, y_pred in [
+            ("train", train_idx, ytr_seq),
+            ("val", val_idx, yva_hat_final),
+            ("test", test_idx, yte_hat_final)
+        ]:
+            if idx is not None and len(idx) > 0:
+                # ✅ Usamos loc en lugar de iloc (para índices tipo fecha)
+                prices = close_series.loc[idx].values
+                bt = run_backtest(y_pred, prices)
+                backtest_results[split_name] = {
+                    "final_return": bt["final_return"],
+                    "sharpe": bt["sharpe"]
+                }
+                print(f"[BACKTEST {split_name.upper()}] "
+                      f"Final Return={bt['final_return']:.3f}, Sharpe={bt['sharpe']:.3f}")
+
+    # --- Empaque de resultados ---
     res = {
-        "cfg": {
-            "cw_train_cb": cw_train_cb,
-            "alphas": alphas.tolist(),
-            "gamma": gamma,
-            "epochs": (epochs_warmup, epochs_finetune),
-            "batch_size": batch_size,
-            "label_smoothing": label_smoothing,
-            "lambda_kl": lambda_kl,
-            "kl_temperature": kl_temperature,
-            "tau_la": tau_la,
-            "shrink_lambda": shrink_lambda,
-            "bias_grids": {k: list(v) for k, v in bias_grids.items()},
-        },
-        "history": history,
-        "artifacts": {
-            "T": float(T),
-            "pi_train": pi_train.tolist(),
-            "pi_test_bbse": pi_test_bbse.tolist(),
-            "C_bbse": C.tolist(),
-            "thr_refined": thr_refined.tolist(),
-            "thr_refined_tilt": thr_refined_tilt.tolist(),
-            "thr_test": thr_test.tolist(),
-            "best_bias": [float(x) for x in best_bias],
-        },
         "metrics": {
-            "test": {
-                "final": m_test,
-                "argmax_base_T": m_test_base,
-                "thr_base_T": m_test_thr_base,
-            },
-            "val": {
-                "final": m_val,
-                "argmax_base_T": m_val_base,
-                "thr_base_T": m_val_thr_base,
-            },
+            "test": {"final": {"macro_f1": f1_score(yte_seq, yte_hat_final, average="macro"), "acc": accuracy_score(yte_seq, yte_hat_final)}},
+            "val":  {"final": {"macro_f1": f1_score(yva_seq, yva_hat_final, average="macro"), "acc": accuracy_score(yva_seq, yva_hat_final)}}
         },
-        "confusion": {
-            "test": {
-                "final": cm_test,
-                "argmax_base_T": cm_test_base,
-                "thr_base_T": cm_test_thr_base,
-            },
-            "val": {
-                "final": cm_val,
-                "argmax_base_T": cm_val_base,
-                "thr_base_T": cm_val_thr_base,
-            },
-        },
+        "backtest": backtest_results,
         "y_true_pred": {
-            "test": {
-                "final": (yte_seq, yte_hat_final),
-                "argmax_base_T": (yte_seq, yte_hat_argmax),
-                "thr_base_T": (yte_seq, yte_hat_thr_base),
-            },
-            "val": {
-                "final": (yva_seq, yva_hat_final),
-                "argmax_base_T": (yva_seq, yva_hat_argmax),
-                "thr_base_T": (yva_seq, yva_hat_thr_base),
-            },
-        },
+            "test": (yte_seq, yte_hat_final),
+            "val": (yva_seq, yva_hat_final),
+        }
     }
     return res
 
-# === Resumen y artefactos ===
 def summarize_run(res: Dict[str, Any]):
     cfg  = res.get("cfg", {})
     art  = res.get("artifacts", {})
     mets = res.get("metrics", {})
-    cms  = res.get("confusion", {})
     ytp  = res.get("y_true_pred", {})
 
     if "cw_train_cb" in cfg:
@@ -394,35 +340,26 @@ def summarize_run(res: Dict[str, Any]):
     if "shrink_lambda" in cfg:
         print("shrink λ:", cfg["shrink_lambda"])
 
-    # TEST
+    # === TEST ===
     print("\n[TEST] -------")
-    mt_final = mets["test"]["final"]
+    mt_final = mets.get("test", {}).get("final", {})
     _print_metrics_block("TEST (FINAL)", mt_final)
-    _, y_pred_te = ytp["test"]["final"]
-    _print_cm_block("Matriz de confusión (TEST, FINAL):",
-                    cms["test"]["final"], _pred_dist(y_pred_te))
+    y_true_te, y_pred_te = ytp.get("test", ([], []))
 
-    # Baselines
-    _print_metrics_block("TEST argmax (T, BASE)", mets["test"]["argmax_base_T"])
-    _print_cm_block("Matriz (TEST, argmax T, BASE):", cms["test"]["argmax_base_T"])
-    _print_metrics_block("TEST thresholded (BASE)", mets["test"]["thr_base_T"])
-    _print_cm_block("Matriz (TEST, thresholded BASE):", cms["test"]["thr_base_T"])
+    # Si no hay confusion matrix en res, la generamos
+    cm_test = confusion_matrix(y_true_te, y_pred_te, labels=[0, 1, 2])
+    _print_cm_block("Matriz de confusión (TEST, FINAL):", cm_test, _pred_dist(y_pred_te))
 
-    # VAL
+    # === VAL ===
     print("\n[VAL] --------")
-    mv_final = mets["val"]["final"]
+    mv_final = mets.get("val", {}).get("final", {})
     _print_metrics_block("VAL  (FINAL)", mv_final)
-    _, y_pred_va = ytp["val"]["final"]
-    _print_cm_block("Matriz de confusión (VAL,  FINAL):",
-                    cms["val"]["final"], _pred_dist(y_pred_va))
+    y_true_va, y_pred_va = ytp.get("val", ([], []))
+    cm_val = confusion_matrix(y_true_va, y_pred_va, labels=[0, 1, 2])
+    _print_cm_block("Matriz de confusión (VAL, FINAL):", cm_val, _pred_dist(y_pred_va))
 
-    _print_metrics_block("VAL  argmax (T, BASE)", mets["val"]["argmax_base_T"])
-    _print_cm_block("Matriz (VAL, argmax T, BASE):", cms["val"]["argmax_base_T"])
-    _print_metrics_block("VAL  thresholded (BASE)", mets["val"]["thr_base_T"])
-    _print_cm_block("Matriz (VAL, thresholded BASE):", cms["val"]["thr_base_T"])
-
-    print(f"\nF1-macro  TEST: {mt_final['macro_f1']:.3f} | VAL: {mv_final['macro_f1']:.3f}")
-    print(f"Acc       TEST: {mt_final['acc']:.3f}   | VAL: {mv_final['acc']:.3f}")
+    print(f"\nF1-macro  TEST: {mt_final.get('macro_f1', 0):.3f} | VAL: {mv_final.get('macro_f1', 0):.3f}")
+    print(f"Acc       TEST: {mt_final.get('acc', 0):.3f}   | VAL: {mv_final.get('acc', 0):.3f}")
 
 def print_run_artifacts(art: Dict[str, Any]):
     print("\n[RUN ARGS/ARTIFACTS]")
@@ -453,13 +390,24 @@ def _supports(y):
     return [int((y == c).sum()) for c in CLASSES]
 
 def sanity_check_from_res(res):
-    yte_true, yte_pred = res["y_true_pred"]["test"]["final"]
-    cm_test = res["confusion"]["test"]["final"]
-    print("Supports TEST:", _supports(yte_true),
-          " | Row sums TEST (FINAL):", _row_sums(cm_test))
+    """
+    Verifica coherencia básica entre supports y matrices de confusión.
+    Adaptada a la nueva estructura de 'y_true_pred' (tuplas directas).
+    """
+    ytp = res.get("y_true_pred", {})
 
-    yva_true, yva_pred = res["y_true_pred"]["val"]["final"]
-    cm_val = res["confusion"]["val"]["final"]
-    print("Supports VAL :", _supports(yva_true),
-          " | Row sums VAL  (FINAL):", _row_sums(cm_val))
+    # === TEST ===
+    if "test" in ytp:
+        yte_true, yte_pred = ytp["test"]
+        cm_test = confusion_matrix(yte_true, yte_pred, labels=[0, 1, 2])
+        print("Supports TEST:", [int((yte_true == c).sum()) for c in [0,1,2]],
+              "| Row sums TEST (FINAL):", cm_test.sum(axis=1).tolist())
+
+    # === VAL ===
+    if "val" in ytp:
+        yva_true, yva_pred = ytp["val"]
+        cm_val = confusion_matrix(yva_true, yva_pred, labels=[0, 1, 2])
+        print("Supports VAL :", [int((yva_true == c).sum()) for c in [0,1,2]],
+              "| Row sums VAL  (FINAL):", cm_val.sum(axis=1).tolist())
+
 
