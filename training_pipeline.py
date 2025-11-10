@@ -296,8 +296,10 @@ def train_eval_one_config(
                 bt = run_backtest(y_pred, prices)
                 backtest_results[split_name] = {
                     "final_return": bt["final_return"],
-                    "sharpe": bt["sharpe"]
+                    "sharpe": bt["sharpe"],
+                    "equity": bt["equity"].tolist()  # <--- añadimos la curva
                 }
+
                 print(f"[BACKTEST {split_name.upper()}] "
                       f"Final Return={bt['final_return']:.3f}, Sharpe={bt['sharpe']:.3f}")
 
