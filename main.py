@@ -147,4 +147,4 @@ if __name__ == "__main__":
     # 4️⃣ Evolución del F1/Loss
     if "history" in res:
         plot_f1_history(res["history"])
-
+#Nuevos
