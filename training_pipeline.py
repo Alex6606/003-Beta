@@ -15,6 +15,7 @@ from typing import Tuple, Dict, Any
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
+from backtest import y_to_signal, backtest_advanced
 from calibration import find_temperature, softmax_T
 from cnn_model import build_cnn_1d_logits
 from prior_correction import bbse_prior_shift_soft, search_logit_biases
@@ -157,7 +158,7 @@ def train_eval_one_config(
     verbose: int = 1
 ) -> Dict[str, Any]:
     """
-    Versión extendida con backtesting sobre train/val/test.
+    Versión extendida con backtesting sobre train/val/test (usa backtest_advanced).
     """
     # --- Modelo base ---
     if model_builder_kwargs is None:
@@ -196,126 +197,176 @@ def train_eval_one_config(
         reduce_on_plateau=True
     )
 
-    # --- Calibración ---
+    # --- Calibración (usar VAL) ---
+    logits_tr   = model.predict(Xtr_seq, verbose=0)   # ✅ añadimos TRAIN para backtest
     logits_val  = model.predict(Xva_seq, verbose=0)
     logits_test = model.predict(Xte_seq, verbose=0)
+
     T = find_temperature(logits_val, yva_seq)
     if verbose:
         print(f"Temperature (VAL): {T:.3f}")
 
+    proba_tr   = softmax_T(logits_tr,   T)
     proba_val  = softmax_T(logits_val,  T)
     proba_test = softmax_T(logits_test, T)
 
-    # --- Threshold tuning ---
-    thr0 = tune_thresholds_by_class(yva_seq, proba_val,
-        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0))
+    # --- Threshold tuning (en VAL) ---
+    thr0 = tune_thresholds_by_class(
+        yva_seq, proba_val,
+        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0)
+    )
     thr_refined, best_val_macro = coordinate_ascent_thresholds(
         yva_seq, proba_val, thr0,
-        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0), rounds=2)
+        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0),
+        rounds=2
+    )
     if verbose:
         print("Umbrales base (VAL):", np.round(thr_refined, 3), "| macroF1_VAL:", round(best_val_macro, 4))
 
-    # --- Prior shift (BBSE) ---
+    # --- Prior shift (BBSE) para TEST ---
     pi_test_bbse, C = bbse_prior_shift_soft(
-        pi_train, yva_seq, proba_val, proba_test, lam_ridge=1e-2, eps=1e-6)
-    logit_shift = np.log(np.clip(pi_test_bbse, 1e-6, 1.0)) - np.log(np.clip(pi_train, 1e-6, 1.0))
+        pi_train, yva_seq, proba_val, proba_test,
+        lam_ridge=1e-2, eps=1e-6
+    )
+    logit_shift     = np.log(np.clip(pi_test_bbse, 1e-6, 1.0)) - np.log(np.clip(pi_train, 1e-6, 1.0))
     logits_test_adj = logits_test + logit_shift.reshape(1, -1)
     proba_test_bbse = softmax_T(logits_test_adj, T)
 
-    # --- Tilt thresholds ---
+    # --- Tilt thresholds (re-sintoniza thresholds en VAL con prior de TEST) ---
     w_ratio = (pi_test_bbse / np.clip(pi_train, 1e-6, 1.0)).reshape(1, -1)
     proba_val_tilt = proba_val * w_ratio
     proba_val_tilt /= proba_val_tilt.sum(axis=1, keepdims=True)
     thr0_tilt = tune_thresholds_by_class(
         yva_seq, proba_val_tilt,
-        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0))
-    thr_refined_tilt, _ = coordinate_ascent_thresholds(
+        metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0)
+    )
+    thr_refined_tilt, best_val_macro_tilt = coordinate_ascent_thresholds(
         yva_seq, proba_val_tilt, thr0_tilt,
-        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0), rounds=2)
+        lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0),
+        rounds=2
+    )
 
-    # --- Bias search ---
+    # --- Bias search (en VAL, sobre thresholds tilt) ---
     best_val_score, best_bias = search_logit_biases(
         logits_val, yva_seq, thr_refined_tilt, T=T,
-        grid_d0=bias_grids["grid_d0"], grid_d1=bias_grids["grid_d1"], grid_d2=bias_grids["grid_d2"])
+        grid_d0=bias_grids["grid_d0"],
+        grid_d1=bias_grids["grid_d1"],
+        grid_d2=bias_grids["grid_d2"],
+    )
+    if verbose:
+        print("Best bias on VAL:", tuple(float(f"{x:.3f}") for x in best_bias),
+              " macroF1_VAL:", round(best_val_score, 4))
 
-    # --- Predicciones finales (TEST y VAL) ---
+    # --- Pred FINAL en cada split ---
+    # TEST: BBSE + bias + thresholds tilt
     logits_test_bbse_bias = logits_test_adj + np.array(best_bias, float).reshape(1, -1)
-    proba_test_final = softmax_T(logits_test_bbse_bias, T)
-    yte_hat_final = apply_thresholds(proba_test_final, thr_refined_tilt)
+    proba_test_final      = softmax_T(logits_test_bbse_bias, T)
+    yte_hat_final         = apply_thresholds(proba_test_final, thr_refined_tilt)
 
+    # VAL: bias + thresholds tilt
     logits_val_bias = logits_val + np.array(best_bias, float).reshape(1, -1)
     proba_val_final = softmax_T(logits_val_bias, T)
     yva_hat_final   = apply_thresholds(proba_val_final, thr_refined_tilt)
 
-    # --- Backtest simple ---
-    def run_backtest(y_pred, prices):
-        """
-        Backtest básico con señales del modelo.
-        Señales: 2=long, 1=hold, 0=short
-        Retorno: equity curve y métricas simples
-        """
-        signals = np.array(y_pred)
-        prices = np.array(prices)
+    # TRAIN: bias + thresholds tilt (sin BBSE)
+    logits_tr_bias = logits_tr + np.array(best_bias, float).reshape(1, -1)
+    proba_tr_final = softmax_T(logits_tr_bias, T)
+    ytr_hat_final  = apply_thresholds(proba_tr_final, thr_refined_tilt)
 
-        # Calcula rendimientos simples
-        rets = np.diff(prices) / prices[:-1]
+    # ==== Métricas y matrices TEST/VAL ====
+    m_test, cm_test = _metrics_and_confusion(yte_seq, yte_hat_final)
+    m_val,  cm_val  = _metrics_and_confusion(yva_seq, yva_hat_final)
 
-        # --- Alinea longitudes automáticamente ---
-        n = min(len(rets), len(signals) - 1)
-        rets = rets[-n:]
-        sigs = signals[-n - 1:-1]  # usa señales previas al retorno
+    if verbose:
+        print("\n[TEST] -------")
+        _print_metrics_block("TEST (FINAL)", m_test)
+        _print_cm_block("Matriz de confusión (TEST, FINAL):", cm_test, _pred_dist(yte_hat_final))
 
-        # Convierte señales a posiciones: long=1, short=-1, hold=0
-        pos = np.where(sigs == 2, 1, np.where(sigs == 0, -1, 0))
+        print("\n[VAL] --------")
+        _print_metrics_block("VAL  (FINAL)", m_val)
+        _print_cm_block("Matriz de confusión (VAL,  FINAL):", cm_val, _pred_dist(yva_hat_final))
 
-        # Rendimientos de la estrategia
-        strat_rets = rets * pos
-        equity = (1 + strat_rets).cumprod()
-
-        # Métricas simples
-        mean_ret = np.mean(strat_rets)
-        std_ret = np.std(strat_rets) + 1e-8
-        sharpe = (mean_ret / std_ret) * np.sqrt(252)
-
-        return {
-            "final_return": float(equity[-1] - 1),
-            "sharpe": float(sharpe),
-            "equity": equity
-        }
-
+    # === Backtest AVANZADO sobre train/val/test ===
     backtest_results = {}
     if close_series is not None:
         for split_name, idx, y_pred in [
-            ("train", train_idx, ytr_seq),
+            ("train", train_idx, ytr_hat_final),
             ("val", val_idx, yva_hat_final),
-            ("test", test_idx, yte_hat_final)
+            ("test", test_idx, yte_hat_final),
         ]:
-            if idx is not None and len(idx) > 0:
-                # ✅ Usamos loc en lugar de iloc (para índices tipo fecha)
-                prices = close_series.loc[idx].values
-                bt = run_backtest(y_pred, prices)
-                backtest_results[split_name] = {
-                    "final_return": bt["final_return"],
-                    "sharpe": bt["sharpe"],
-                    "equity": bt["equity"].tolist()  # <--- añadimos la curva
-                }
+            if idx is None or len(idx) == 0:
+                continue
 
-                print(f"[BACKTEST {split_name.upper()}] "
-                      f"Final Return={bt['final_return']:.3f}, Sharpe={bt['sharpe']:.3f}")
+            # === Sincroniza longitudes ===
+            n = min(len(idx), len(y_pred))
+            aligned_idx = idx[-n:]
+            aligned_signal = y_to_signal(y_pred[-n:])
 
-    # --- Empaque de resultados ---
+            # === Corre el backtest avanzado ===
+            bt = backtest_advanced(
+                close=close_series.loc[aligned_idx],
+                idx=aligned_idx,
+                signal=aligned_signal,
+                fee=0.00125,
+                borrow_rate_annual=0.0025,
+                freq=252,
+                sl_pct=0.02,
+                tp_pct=0.03
+            )
+
+            eq = bt["series"]["equity"]
+            backtest_results[split_name] = {
+                "final_return": float(eq.iloc[-1] - 1.0),
+                "sharpe": bt["metrics"]["Sharpe"],
+                "equity": eq.values.tolist(),
+                "metrics": bt["metrics"],
+            }
+
+            print(f"[BACKTEST {split_name.upper()}] "
+                  f"Final Return={backtest_results[split_name]['final_return']:.3f}, "
+                  f"Sharpe={backtest_results[split_name]['sharpe']:.3f}")
+
+    # --- Empaque de resultados (mantiene la forma que usa summarize_run/visualization) ---
     res = {
-        "metrics": {
-            "test": {"final": {"macro_f1": f1_score(yte_seq, yte_hat_final, average="macro"), "acc": accuracy_score(yte_seq, yte_hat_final)}},
-            "val":  {"final": {"macro_f1": f1_score(yva_seq, yva_hat_final, average="macro"), "acc": accuracy_score(yva_seq, yva_hat_final)}}
+        "cfg": {
+            "cw_train_cb": cw_train_cb,
+            "alphas": alphas.tolist(),
+            "gamma": gamma,
+            "epochs": (epochs_warmup, epochs_finetune),
+            "batch_size": batch_size,
+            "label_smoothing": label_smoothing,
+            "lambda_kl": lambda_kl,
+            "kl_temperature": kl_temperature,
+            "tau_la": tau_la,
+            "shrink_lambda": shrink_lambda,
+            "bias_grids": {k: list(v) for k, v in bias_grids.items()},
         },
-        "backtest": backtest_results,
+        "history": history,
+        "artifacts": {
+            "T": float(T),
+            "pi_train": pi_train.tolist(),
+            "pi_test_bbse": pi_test_bbse.tolist(),
+            "C_bbse": C.tolist(),
+            "thr_refined": thr_refined.tolist(),
+            "thr_refined_tilt": thr_refined_tilt.tolist(),
+            "best_bias": [float(x) for x in best_bias],
+        },
+        "metrics": {
+            "test": {"final": m_test},
+            "val":  {"final": m_val},
+        },
+        "confusion": {
+            "test": {"final": cm_test},
+            "val":  {"final": cm_val},
+        },
         "y_true_pred": {
             "test": (yte_seq, yte_hat_final),
-            "val": (yva_seq, yva_hat_final),
-        }
+            "val":  (yva_seq, yva_hat_final),
+        },
+        "backtest": backtest_results,
     }
     return res
+
 
 def summarize_run(res: Dict[str, Any]):
     cfg  = res.get("cfg", {})
