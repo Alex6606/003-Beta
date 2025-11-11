@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/lenin/OneDrive/Escritorio/004/mlruns/214395930898120039/6530cb1f29ec4bc1afe5b3c73a4ad7d2/artifacts
+end_time: 1762900083252
+entry_point_name: ''
+experiment_id: '214395930898120039'
+lifecycle_stage: active
+run_id: 6530cb1f29ec4bc1afe5b3c73a4ad7d2
+run_name: CNN_win60_gamma1.1_sh0.62
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1762900083127
+status: 3
+tags: []
+user_id: lenin

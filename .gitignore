@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# MLflow
+mlruns/
+mlartifacts/
+
 # Distribution / packaging
 .Python
 build/

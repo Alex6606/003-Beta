@@ -1,0 +1,1 @@
+{"n_features": 258, "window": 60, "filters": [128, 128, 64], "kernels": [9, 5, 3], "dilations": [1, 2, 4], "residual": true, "dropout": 0.15, "l2": 0.0005, "head_units": 256, "head_dropout": 0.3, "use_ln": true, "output_bias": "[0. 0. 0.]"}
