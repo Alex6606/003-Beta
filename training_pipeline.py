@@ -18,6 +18,8 @@ from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 from backtest import y_to_signal, backtest_advanced
 from calibration import find_temperature, softmax_T
 from cnn_model import build_cnn_1d_logits
+from mlflow_tracking import log_artifacts_dict, log_model_keras, end_mlflow_run, log_metrics, log_params, \
+    start_mlflow_run
 from prior_correction import bbse_prior_shift_soft, search_logit_biases
 from sequence_builder import build_cnn_sequences_for_splits
 from threshold_tuning import tune_thresholds_by_class, coordinate_ascent_thresholds, apply_thresholds
@@ -365,6 +367,70 @@ def train_eval_one_config(
         },
         "backtest": backtest_results,
     }
+    run_name = f"CNN_win{Xtr_seq.shape[1]}_gamma{gamma}_sh{shrink_lambda}"
+    start_mlflow_run(
+        experiment_name="DeepCNN_Trading",
+        run_name=run_name,
+        tags={"stage": "train_eval", "model": "cnn1d"}
+    )
+
+    try:
+        # 1) Hiperparámetros y config
+        cfg_dict = {
+            "gamma": gamma,
+            "epochs_warmup": epochs_warmup,
+            "epochs_finetune": epochs_finetune,
+            "batch_size": batch_size,
+            "label_smoothing": label_smoothing,
+            "tau_la": tau_la,
+            "lambda_kl": lambda_kl,
+            "kl_temperature": kl_temperature,
+            "shrink_lambda": shrink_lambda,
+            "n_features": int(Xtr_seq.shape[-1]),
+            "window": int(Xtr_seq.shape[1]),
+            "architecture": model_builder_kwargs,
+        }
+        log_params(cfg_dict, prefix="train_")
+
+        # 2) Métricas principales
+        #   macroF1/acc de VAL y TEST finales (coinciden con res["metrics"])
+        log_metrics({
+            "val_macro_f1": float(m_val["macro_f1"]),
+            "val_acc": float(m_val["acc"]),
+            "test_macro_f1": float(m_test["macro_f1"]),
+            "test_acc": float(m_test["acc"]),
+        })
+
+        # 3) Métricas de backtest si existen
+        if "backtest" in locals() and isinstance(backtest_results, dict):
+            for split, bt in backtest_results.items():
+                mets = bt.get("metrics", {})
+                # nombres estandarizados
+                tolog = {}
+                for mk in ["CAGR", "Sharpe", "MaxDrawdown", "AnnualVol", "WinRate"]:
+                    if mk in mets:
+                        tolog[f"bt_{split}_{mk}"] = float(mets[mk])
+                if "final_return" in bt:
+                    tolog[f"bt_{split}_FinalReturn"] = float(bt["final_return"])
+                if tolog:
+                    log_metrics(tolog)
+
+        # 4) Artefactos relevantes
+        art = {
+            "T": float(T),
+            "pi_train": pi_train.tolist(),
+            "pi_test_bbse": pi_test_bbse.tolist(),
+            "thr_refined": thr_refined.tolist(),
+            "thr_refined_tilt": thr_refined_tilt.tolist(),
+            "best_bias": [float(x) for x in best_bias],
+        }
+        log_artifacts_dict(art, artifact_name="artifacts.json")
+
+        # 5) Modelo
+        log_model_keras(model, artifact_path="model")
+    finally:
+        end_mlflow_run()
+    # === fin MLflow logging ===
     return res
 
 
