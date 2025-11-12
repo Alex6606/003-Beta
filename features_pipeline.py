@@ -89,3 +89,12 @@ def build_and_normalize_features_per_split(
         "feature_types": ftypes,
         "norm_stats": norm_stats,
     }
+
+def export_features_for_drift(bundle):
+    import os
+    os.makedirs("./data/features", exist_ok=True)
+    bundle["norm"]["train"].to_csv("./data/features/feat_train.csv")
+    bundle["norm"]["val"].to_csv("./data/features/feat_val.csv")
+    bundle["norm"]["test"].to_csv("./data/features/feat_test.csv")
+    print("✅ Features (norm) exportados a ./data/features/")
+

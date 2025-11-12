@@ -3,7 +3,7 @@
 # ============================================================
 
 from data_utils import get_data
-from features_pipeline import build_and_normalize_features_per_split
+from features_pipeline import build_and_normalize_features_per_split, export_features_for_drift
 from indicators import WINDOWS
 from labeling import build_labels_for_feature_splits
 from training_pipeline import train_eval_from_raw, summarize_run, sanity_check_from_res
@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
     print("\n=== Construyendo features y normalizando ===")
     bundle = build_and_normalize_features_per_split(data, windows=WINDOWS, warmup=200)
+    export_features_for_drift(bundle)
     feat_train_n = bundle["norm"]["train"]
     feat_test_n  = bundle["norm"]["test"]
     feat_val_n   = bundle["norm"]["val"]
