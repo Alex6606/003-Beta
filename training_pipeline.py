@@ -15,11 +15,20 @@ from typing import Tuple, Dict, Any
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
+# 👇 añadido para usar mlflow.active_run() y construir model_uri
+import mlflow
+
 from backtest import y_to_signal, backtest_advanced
 from calibration import find_temperature, softmax_T
 from cnn_model import build_cnn_1d_logits
-from mlflow_tracking import log_artifacts_dict, log_model_keras, end_mlflow_run, log_metrics, log_params, \
-    start_mlflow_run
+from mlflow_tracking import (
+    log_artifacts_dict,
+    log_model_keras,
+    end_mlflow_run,
+    log_metrics,
+    log_params,
+    start_mlflow_run,
+)
 from prior_correction import bbse_prior_shift_soft, search_logit_biases
 from sequence_builder import build_cnn_sequences_for_splits
 from threshold_tuning import tune_thresholds_by_class, coordinate_ascent_thresholds, apply_thresholds
@@ -94,8 +103,8 @@ def train_eval_from_raw(
     epochs_warmup=18, epochs_finetune=12, batch_size=64,
     label_smoothing=0.02, lambda_kl=0.05, kl_temperature=1.5, tau_la=0.6,
     shrink_lambda=0.85, verbose=1,
-    # 👇 nuevos parámetros para backtest
-    close_series=None, train_idx=None, val_idx=None, test_idx=None
+    close_series=None, train_idx=None, val_idx=None, test_idx=None,
+    feature_names=None
 ):
     """Construye secuencias y lanza entrenamiento/evaluación completa (con soporte para backtesting)."""
     seq_bundle = build_cnn_sequences_for_splits(
@@ -127,11 +136,11 @@ def train_eval_from_raw(
         tau_la=tau_la,
         shrink_lambda=shrink_lambda,
         verbose=verbose,
-        # 👇 pasa los datos necesarios al backtest
         close_series=close_series,
         train_idx=train_idx,
         val_idx=val_idx,
-        test_idx=test_idx
+        test_idx=test_idx,
+        feature_names=feature_names
     )
     return res
 
@@ -157,7 +166,8 @@ def train_eval_one_config(
     close_series=None,
     train_idx=None, val_idx=None, test_idx=None,
     # verbosidad
-    verbose: int = 1
+    verbose: int = 1,
+    feature_names=None
 ) -> Dict[str, Any]:
     """
     Versión extendida con backtesting sobre train/val/test (usa backtest_advanced).
@@ -417,17 +427,46 @@ def train_eval_one_config(
 
         # 4) Artefactos relevantes
         art = {
-            "T": float(T),
-            "pi_train": pi_train.tolist(),
-            "pi_test_bbse": pi_test_bbse.tolist(),
-            "thr_refined": thr_refined.tolist(),
-            "thr_refined_tilt": thr_refined_tilt.tolist(),
-            "best_bias": [float(x) for x in best_bias],
+        "T": float(T),
+        "pi_train": pi_train.tolist(),
+        "pi_test_bbse": pi_test_bbse.tolist(),
+        "thr_refined": thr_refined.tolist(),
+        "thr_refined_tilt": thr_refined_tilt.tolist(),
+        "best_bias": [float(x) for x in best_bias],
         }
         log_artifacts_dict(art, artifact_name="artifacts.json")
 
-        # 5) Modelo
+        # 🔴 NUEVO: guarda el orden de columnas (‘feature_names’) si te lo mandaron
+        if feature_names is not None:
+            try:
+                # usa directamente mlflow.log_dict por si tu helper no escribe el archivo
+                import mlflow
+                mlflow.log_dict({"feature_names": list(map(str, feature_names))}, "feature_stats.json")
+                print("[MLflow] feature_stats.json loggeado.")
+            except Exception as e:
+                print("[WARN] No se pudo sloggear feature_stats.json:", e)
+        # 5) Modelo (artefacto del run)
         log_model_keras(model, artifact_path="model")
+
+        # 6) 🔴 NUEVO: construir y persistir el URI del modelo (sin Registry)
+        active_run = mlflow.active_run()
+        if active_run is not None:
+            model_uri = f"runs:/{active_run.info.run_id}/model"
+            print("[MLflow] Model URI:", model_uri)
+
+            # lo guardamos como archivo de conveniencia para la API
+            try:
+                with open("latest_model_uri.txt", "w", encoding="utf-8") as f:
+                    f.write(model_uri)
+            except Exception as e:
+                print("[WARN] No se pudo escribir latest_model_uri.txt:", e)
+
+            # opcional: también dejarlo como artefacto JSON dentro del run
+            try:
+                log_artifacts_dict({"model_uri": model_uri}, artifact_name="model_uri.json")
+            except Exception as e:
+                print("[WARN] No se pudo loggear model_uri.json:", e)
+
     finally:
         end_mlflow_run()
     # === fin MLflow logging ===
@@ -480,6 +519,7 @@ def summarize_run(res: Dict[str, Any]):
     print(f"\nF1-macro  TEST: {mt_final.get('macro_f1', 0):.3f} | VAL: {mv_final.get('macro_f1', 0):.3f}")
     print(f"Acc       TEST: {mt_final.get('acc', 0):.3f}   | VAL: {mv_final.get('acc', 0):.3f}")
 
+
 def print_run_artifacts(art: Dict[str, Any]):
     print("\n[RUN ARGS/ARTIFACTS]")
     if 'cw_train_cb' in art:
@@ -502,11 +542,14 @@ def print_run_artifacts(art: Dict[str, Any]):
     if 'shrink_lambda' in art:
         print(f"shrink λ: {art['shrink_lambda']}")
 
+
 def _row_sums(a):
     return np.asarray(a).sum(axis=1).tolist()
 
+
 def _supports(y):
     return [int((y == c).sum()) for c in CLASSES]
+
 
 def sanity_check_from_res(res):
     """
@@ -519,14 +562,12 @@ def sanity_check_from_res(res):
     if "test" in ytp:
         yte_true, yte_pred = ytp["test"]
         cm_test = confusion_matrix(yte_true, yte_pred, labels=[0, 1, 2])
-        print("Supports TEST:", [int((yte_true == c).sum()) for c in [0,1,2]],
+        print("Supports TEST:", [int((yte_true == c).sum()) for c in [0, 1, 2]],
               "| Row sums TEST (FINAL):", cm_test.sum(axis=1).tolist())
 
     # === VAL ===
     if "val" in ytp:
         yva_true, yva_pred = ytp["val"]
         cm_val = confusion_matrix(yva_true, yva_pred, labels=[0, 1, 2])
-        print("Supports VAL :", [int((yva_true == c).sum()) for c in [0,1,2]],
+        print("Supports VAL :", [int((yva_true == c).sum()) for c in [0, 1, 2]],
               "| Row sums VAL  (FINAL):", cm_val.sum(axis=1).tolist())
-
-
