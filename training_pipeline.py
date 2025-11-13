@@ -371,8 +371,9 @@ def train_eval_one_config(
             "val":  {"final": cm_val},
         },
         "y_true_pred": {
-            "test": (yte_seq, yte_hat_final),
-            "val":  (yva_seq, yva_hat_final),
+            "train": (ytr_seq, ytr_hat_final),
+            "val":   (yva_seq, yva_hat_final),
+            "test":  (yte_seq, yte_hat_final),
         },
         "backtest": backtest_results,
     }
@@ -575,3 +576,48 @@ def sanity_check_from_res(res):
         cm_val = confusion_matrix(yva_true, yva_pred, labels=[0, 1, 2])
         print("Supports VAL :", [int((yva_true == c).sum()) for c in [0, 1, 2]],
               "| Row sums VAL  (FINAL):", cm_val.sum(axis=1).tolist())
+
+
+def collect_split_metrics(res):
+    """
+    Extrae métricas, matrices de confusión y distribuciones de señales
+    para train/val/test sin imprimir nada.
+    Ideal para reportes en main.py u otros módulos.
+    """
+    from sklearn.metrics import confusion_matrix
+    out = {}
+
+    if "y_true_pred" not in res:
+        return out
+
+    for split in ("train", "val", "test"):
+        if split not in res["y_true_pred"]:
+            continue
+
+        y_true, y_pred = res["y_true_pred"][split]
+        y_true = np.asarray(y_true).ravel()
+        y_pred = np.asarray(y_pred).ravel()
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
+
+        # métricas
+        m = {
+            "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+            "acc": float(accuracy_score(y_true, y_pred)),
+        }
+
+        # distribución predicha
+        pred_dist = {c: float((y_pred == c).sum()) / len(y_pred) for c in [0, 1, 2]}
+
+        # señales (-1,0,1)
+        signals = y_to_signal(y_pred)
+        sig_dist = {s: float((signals == s).sum()) / len(signals) for s in [-1, 0, 1]}
+
+        out[split] = {
+            "metrics": m,
+            "cm": cm,
+            "pred_dist": pred_dist,
+            "signal_dist": sig_dist,
+            "n": len(y_pred),
+        }
+
+    return out

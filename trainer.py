@@ -10,7 +10,7 @@ Incluye manejo de early stopping o reducción de LR.
 
 from tensorflow import keras
 from losses import make_multiclass_loss_from_logits
-# from callbacks import MacroF1Callback  # (solo si luego defines tu callback personalizado)
+
 
 
 def train_two_phase_v4(

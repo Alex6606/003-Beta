@@ -39,67 +39,77 @@ def backtest_advanced(
 ):
     """
     Backtest vectorizado avanzado con SL/TP aproximado.
-
-    Parámetros:
-    -----------
-    close : pd.Series
-        Serie de precios (Close).
-    idx : pd.Index
-        Índices del conjunto (train/val/test).
-    signal : np.ndarray
-        Señales del modelo {-1, 0, +1}.
-    fee : float
-        Comisión por operación (por unidad de capital).
-    borrow_rate_annual : float
-        Costo anual por mantener posiciones cortas.
-    freq : int
-        Frecuencia anualizada (252 = días bursátiles).
-    sl_pct, tp_pct : float
-        Porcentajes de stop-loss y take-profit (en decimal).
-
-    Retorna:
-    --------
-    dict con series (equity, retornos, drawdown) y métricas.
+    Incluye métricas extendidas: Sharpe, Sortino, Calmar, MDD, WinRate.
     """
 
     sig = pd.Series(signal, index=idx).astype(float)
     sig = sig.reindex(close.index).fillna(0.0)
+
+    # Retornos diarios del activo
     r = close.pct_change().fillna(0.0)
+
+    # Posición efectiva
     pos = sig.shift(1).fillna(0.0)
 
-    # --- Costos ---
+    # =============================
+    # Costos de trading y préstamo
+    # =============================
     turnover = (pos - pos.shift(1).fillna(0.0)).abs()
     trading_cost = turnover * fee
+
     borrow_daily = borrow_rate_annual / freq
     borrow_cost = borrow_daily * (pos < 0).astype(float).abs()
 
-    # --- Rendimiento base ---
+    # =============================
+    # Retorno base del modelo
+    # =============================
     strat_ret = pos * r
 
-    # --- Stop-loss / Take-profit aproximado ---
-    sl_hit = (r < -sl_pct) & (pos > 0) | (r > sl_pct) & (pos < 0)
-    tp_hit = (r > tp_pct) & (pos > 0) | (r < -tp_pct) & (pos < 0)
+    # =============================
+    # Stop-loss / Take-profit
+    # =============================
+    sl_hit = ((r < -sl_pct) & (pos > 0)) | ((r > sl_pct) & (pos < 0))
+    tp_hit = ((r > tp_pct) & (pos > 0)) | ((r < -tp_pct) & (pos < 0))
 
-    # penalización SL y bonus TP (simplificada)
+    # Aplica SL/TP
     strat_ret = np.where(sl_hit, -sl_pct, strat_ret)
     strat_ret = np.where(tp_hit, tp_pct, strat_ret)
 
-    # --- Agregar costos ---
+    # =============================
+    # Costos finales
+    # =============================
     strat_ret = strat_ret - trading_cost - borrow_cost
+
+    # =============================
+    # Equity curve
+    # =============================
     eq = (1.0 + strat_ret).cumprod()
 
-    # --- Drawdown ---
+    # Drawdown
     dd = eq / eq.cummax() - 1.0
 
-    # --- Métricas ---
+    # =============================
+    # Métricas clásicas
+    # =============================
     mu = strat_ret.mean() * freq
     sigma = strat_ret.std(ddof=1) * np.sqrt(freq)
-    sharpe = mu / sigma if sigma > 0 else 0.0
-    mdd = dd.min()
-    cagr = eq.iloc[-1] ** (freq / len(eq)) - 1.0 if len(eq) > 0 else 0.0
 
-    # tasa de acierto condicional
+    sharpe = mu / sigma if sigma > 0 else 0.0
+    mdd = float(dd.min())
+    cagr = float(eq.iloc[-1] ** (freq / len(eq)) - 1.0) if len(eq) > 0 else 0.0
     win_rate = float((strat_ret > 0).mean())
+
+    # =============================
+    # MÉTRICAS NUEVAS
+    # =============================
+
+    # --- Sortino Ratio ---
+    downside = strat_ret[strat_ret < 0]
+    downside_std = downside.std(ddof=1) * np.sqrt(freq)
+    sortino = mu / downside_std if downside_std > 0 else 0.0
+
+    # --- Calmar Ratio ---
+    calmar = cagr / abs(mdd) if mdd != 0 else 0.0
 
     return {
         "series": {
@@ -109,13 +119,16 @@ def backtest_advanced(
             "signals": sig,
         },
         "metrics": {
-            "CAGR": float(cagr),
-            "Sharpe": float(sharpe),
-            "MaxDrawdown": float(mdd),
-            "AnnualVol": float(sigma),
+            "CAGR": cagr,
+            "Sharpe": sharpe,
+            "Sortino": sortino,      # ⬅️ Nuevo
+            "Calmar": calmar,        # ⬅️ Nuevo
+            "MaxDrawdown": mdd,
+            "AnnualVol": sigma,
             "WinRate": win_rate,
             "SL_hits": int(sl_hit.sum()),
             "TP_hits": int(tp_hit.sum()),
         },
     }
+
 
