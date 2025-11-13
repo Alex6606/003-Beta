@@ -146,27 +146,35 @@ if __name__ == "__main__":
     # DISTRIBUCIONES
     print_pred_distributions(res)
 
-    # ---------------------------
-    # 4) BACKTEST (Train / Val / Test)
-    # ---------------------------
+    # ===========================================================
+    # 4) BACKTEST (Train → Test → Val)
+    # ===========================================================
     print("\n========== BACKTESTS AVANZADOS POR SPLIT ==========\n")
 
+    ORDER = ["train", "test", "val"]
+
     if "backtest" in res:
-        for split, bt in res["backtest"].items():
+        for split in ORDER:
+            if split not in res["backtest"]:
+                continue
+            bt = res["backtest"][split]
             print(f"--- {split.upper()} ---")
             print(f"Final Return: {bt.get('final_return', 0):.4f}")
             for k, v in bt["metrics"].items():
                 print(f" - {k}: {v:.4f}")
             print()
 
-    print("\n=== Métricas Globales (Promedio Train/Val/Test) ===")
+    # ===========================================================
+    # Métricas Globales (promedio Train/Test/Val)
+    # ===========================================================
+    print("\n=== Métricas Globales (Promedio Train/Test/Val) ===")
 
     if "backtest" in res:
-        all_splits = list(res["backtest"].values())
-
-
         def avg(metric):
-            vals = [bt["metrics"].get(metric, 0) for bt in all_splits]
+            vals = [
+                res["backtest"][s]["metrics"].get(metric, 0)
+                for s in ORDER if s in res["backtest"]
+            ]
             return sum(vals) / len(vals)
 
 
@@ -177,16 +185,16 @@ if __name__ == "__main__":
         print(f"Global WinRate:    {avg('WinRate'):.4f}")
         print(f"Global MaxDD:      {avg('MaxDrawdown'):.4f}")
 
-    # ---------------------------
+    # ===========================================================
     # 5) VISUALIZACIONES
-    # ---------------------------
+    # ===========================================================
     print("\n========== Visualizaciones ==========\n")
 
-    # 1) Curvas de equity (train/val/test)
+    # 1) Curvas de equity (split ordenado Train → Test → Val)
     if "backtest" in res:
-        plot_equity_curves(res["backtest"])
+        plot_equity_curves(res["backtest"], show_drawdown=True)
 
-    # 2) Matriz de confusión (Test)
+    # 2) Matriz de confusión (TEST)
     if "y_true_pred" in res and "test" in res["y_true_pred"]:
         y_true, y_pred = res["y_true_pred"]["test"]
         plot_confusion_matrix(y_true, y_pred, classes=(0, 1, 2))
