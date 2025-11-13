@@ -2,9 +2,10 @@
 # threshold_tuning.py
 # ============================================
 """
-Funciones para ajuste y aplicación de umbrales por clase
-después de calibrar las probabilidades del modelo.
-Incluye:
+Functions for class-wise threshold adjustment and application
+after calibrating model probabilities.
+
+Includes:
 - apply_thresholds
 - tune_thresholds_by_class
 - coordinate_ascent_thresholds
@@ -15,14 +16,14 @@ import numpy as np
 
 def apply_thresholds(proba: np.ndarray, thr: np.ndarray) -> np.ndarray:
     """
-    Regla: si alguna clase supera su umbral, elige la de mayor (proba_k - thr_k);
-    si ninguna supera, usa argmax.
+    Rule: if any class surpasses its threshold, pick the one with the largest (proba_k - thr_k);
+    if none surpass, fallback to argmax.
     """
     proba = np.asarray(proba)
     thr = np.asarray(thr)
     y_argmax = proba.argmax(axis=1)
 
-    # matriz "margen" (proba - thr); <0 significa "no superó umbral"
+    # margin matrix (proba - thr); <0 means "did not surpass threshold"
     margins = proba - thr.reshape(1, -1)
     best_cls = margins.argmax(axis=1)
     best_margin = margins[np.arange(len(proba)), best_cls]
@@ -35,8 +36,8 @@ def apply_thresholds(proba: np.ndarray, thr: np.ndarray) -> np.ndarray:
 
 def tune_thresholds_by_class(y_true: np.ndarray, proba: np.ndarray, metric_fn) -> np.ndarray:
     """
-    Busca umbrales independientes por clase maximizando 'metric_fn' (p. ej. macro-F1).
-    Recorre una cuadrícula de thresholds de 0.2 a 0.9 en pasos de ~0.02.
+    Searches independent thresholds per class to maximize 'metric_fn' (e.g., macro-F1).
+    Sweeps a grid of thresholds from 0.2 to 0.9 in ~0.02 increments.
     """
     K = proba.shape[1]
     thr = np.full(K, 1/3, dtype=float)
@@ -61,10 +62,11 @@ def coordinate_ascent_thresholds(
     rounds: int = 2
 ) -> tuple[np.ndarray, float]:
     """
-    Refinamiento iterativo (coordinate ascent) de umbrales por clase.
+    Iterative refinement (coordinate ascent) of class-wise thresholds.
 
-    Parte de un vector inicial thr0 y, durante 'rounds' iteraciones,
-    ajusta cada clase para maximizar la métrica global (macro-F1 u otra).
+    Starts from an initial threshold vector thr0 and,
+    during 'rounds' iterations, adjusts each class to
+    maximize the global metric (macro-F1 or other).
     """
     thr = np.array(thr0, dtype=float).copy()
     K = proba.shape[1]

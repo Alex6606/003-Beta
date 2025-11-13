@@ -2,8 +2,8 @@
 # cnn_model.py
 # ============================================
 """
-Módulo de construcción del modelo CNN-1D con bloques convolucionales
-y residuales para clasificación multiclase.
+Module for building the 1D CNN model with convolutional and residual
+blocks for multiclass classification.
 """
 
 from tensorflow import keras
@@ -27,32 +27,33 @@ def build_cnn_1d_logits(
     output_bias=None
 ):
     """
-    CNN 1D con bloques residuales opcionales, normalización configurable y salida lineal (logits).
+    1D CNN with optional residual blocks, configurable normalization,
+    and linear output (logits).
 
-    Parámetros:
-    -----------
+    Parameters
+    ----------
     n_features : int
-        Número de variables de entrada (features).
+        Number of input variables (features).
     window : int
-        Longitud de las secuencias temporales.
-    n_classes : int, opcional (default=3)
-        Número de clases en la salida (para softmax).
-    filters, kernels, dilations : tuplas
-        Configuración por capa convolucional.
+        Length of temporal sequences.
+    n_classes : int, optional (default=3)
+        Number of output classes (for softmax classification).
+    filters, kernels, dilations : tuple
+        Per-layer convolutional configuration.
     residual : bool
-        Si True, activa bloques residuales.
+        If True, enables residual blocks.
     dropout : float
-        Dropout dentro de los bloques.
+        Dropout inside convolutional blocks.
     l2 : float
-        Regularización L2 en las convoluciones y densa.
-    output_bias : array-like o None
-        Bias inicial opcional para logits.
+        L2 regularization for convolutional and dense layers.
+    output_bias : array-like or None
+        Optional initial bias for logits.
     """
 
     inp = keras.Input(shape=(window, n_features))
     x = layers.SpatialDropout1D(0.10)(inp)
 
-    # --- Bloques internos ---
+    # --- Internal blocks ---
     def _conv_block(x, f, k, d):
         pad = "causal" if causal else "same"
         x = layers.Conv1D(
@@ -75,11 +76,11 @@ def build_cnn_1d_logits(
             skip = layers.Conv1D(f, 1, padding="same")(skip)
         return layers.Add()([skip, y])
 
-    # --- Stack convolucional ---
+    # --- Convolutional stack ---
     for i, (f, k, d) in enumerate(zip(filters, kernels, dilations)):
         x = _residual_block(x, f, k, d) if (residual and i > 0) else _conv_block(x, f, k, d)
 
-    # --- Head ---
+    # --- Classification head ---
     x = layers.GlobalAveragePooling1D()(x)
     x = layers.Dense(head_units, activation="relu", kernel_regularizer=regularizers.l2(l2))(x)
     x = layers.Dropout(head_dropout)(x)

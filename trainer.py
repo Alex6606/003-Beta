@@ -2,24 +2,23 @@
 # trainer.py
 # ============================================
 """
-Entrenamiento en dos fases para clasificación multiclase:
- - Fase 1: Cross-Entropy + Logit Adjustment + KL
- - Fase 2: Focal Loss + Logit Adjustment + KL
-Incluye manejo de early stopping o reducción de LR.
+Two-phase training for multiclass classification:
+ - Phase 1: Cross-Entropy + Logit Adjustment + KL
+ - Phase 2: Focal Loss + Logit Adjustment + KL
+Includes support for early stopping or ReduceLROnPlateau.
 """
 
 from tensorflow import keras
 from losses import make_multiclass_loss_from_logits
 
 
-
 def train_two_phase_v4(
     model,
     Xtr, ytr, Xva, yva,
-    cw_train_cb,              # dict de class weights
-    alphas_focal, gamma,      # focal params
-    pi_prior,                 # prior train
-    prior_target,             # prior deseado para KL
+    cw_train_cb,              # dict of class weights
+    alphas_focal, gamma,      # focal parameters
+    pi_prior,                 # train prior distribution
+    prior_target,             # target prior for KL regularization
     epochs_warmup=12, epochs_finetune=6,
     batch_size=64,
     label_smoothing=0.02,
@@ -27,28 +26,29 @@ def train_two_phase_v4(
     kl_temperature=1.5,
     tau_la=0.6,
     verbose=1,
-    early_stopping=True,          # activa MacroF1Callback
-    reduce_on_plateau=True        # alternativa cuando no se usa ES
+    early_stopping=True,      # activates MacroF1Callback
+    reduce_on_plateau=True    # alternative when not using early stopping
 ):
-    """Entrenamiento en dos fases: CE → Focal."""
+    """Two-phase training: CE → Focal."""
     callbacks_phase1, callbacks_phase2 = [], []
 
     # ============================================================
-    # Callbacks configurables
+    # Configurable Callbacks
     # ============================================================
     if early_stopping:
         try:
             from callbacks import MacroF1Callback
             cb_f1 = MacroF1Callback(
                 Xva, yva,
-                patience=6, reduce_lr_patience=3, factor=0.5, min_lr=1e-5, verbose=1
+                patience=6, reduce_lr_patience=3,
+                factor=0.5, min_lr=1e-5, verbose=1
             )
             callbacks_phase1.append(cb_f1)
             callbacks_phase2.append(cb_f1)
         except ImportError:
-            print("[WARN] MacroF1Callback no encontrado. Continuando sin early stopping.")
+            print("[WARN] MacroF1Callback not found. Continuing without early stopping.")
     elif reduce_on_plateau:
-        # Reduce LR on Plateau estándar
+        # Standard Reduce LR on Plateau
         rlp1 = keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss", factor=0.5, patience=3, min_lr=1e-5, verbose=1
         )
@@ -59,7 +59,7 @@ def train_two_phase_v4(
         callbacks_phase2.append(rlp2)
 
     # ============================================================
-    # Fase 1 → Cross-Entropy + Logit Adjustment + KL
+    # Phase 1 → Cross-Entropy + Logit Adjustment + KL
     # ============================================================
     loss_ce = make_multiclass_loss_from_logits(
         mode="ce",
@@ -76,7 +76,7 @@ def train_two_phase_v4(
         metrics=["accuracy"]
     )
 
-    print("\n===== Entrenando Fase 1: CE + LA + KL =====")
+    print("\n===== Training Phase 1: CE + LA + KL =====")
     h1 = model.fit(
         Xtr, ytr,
         validation_data=(Xva, yva),
@@ -87,7 +87,7 @@ def train_two_phase_v4(
     )
 
     # ============================================================
-    # Fase 2 → Focal + Logit Adjustment + KL
+    # Phase 2 → Focal + Logit Adjustment + KL
     # ============================================================
     loss_focal = make_multiclass_loss_from_logits(
         mode="focal",
@@ -104,7 +104,7 @@ def train_two_phase_v4(
         metrics=["accuracy"]
     )
 
-    print("\n===== Entrenando Fase 2: Focal + LA + KL =====")
+    print("\n===== Training Phase 2: Focal + LA + KL =====")
     h2 = model.fit(
         Xtr, ytr,
         validation_data=(Xva, yva),
@@ -114,5 +114,5 @@ def train_two_phase_v4(
         verbose=verbose
     )
 
-    print("\n✅ Entrenamiento completado.")
+    print("\n✅ Training completed.")
     return model, {"warmup": h1.history, "finetune": h2.history}

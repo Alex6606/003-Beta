@@ -2,14 +2,14 @@
 # labeling.py
 # ============================================
 """
-Módulo de generación y manejo de etiquetas (labels) para modelos financieros.
-Incluye triple-barrier simplificado, pesos de clase, alineación con features
-y utilidades de exploración.
+Label generation module for financial ML models.
+Includes simplified triple-barrier labeling, class weights,
+alignment with feature matrices, and exploration utilities.
 """
 
 import numpy as np
 import pandas as pd
-from IPython.display import display  # opcional para debug
+from IPython.display import display  # optional for debugging
 
 
 # ======================================================
@@ -18,21 +18,22 @@ from IPython.display import display  # opcional para debug
 
 def make_labels_from_prices(prices: pd.Series, horizon: int = 3, threshold: float = 0.01) -> pd.DataFrame:
     """
-    Triple-Barrier "ligero" por primera barrera alcanzada en [t+1..t+h].
+    Lightweight Triple-Barrier labeling: picks the first barrier reached in [t+1 .. t+h].
 
-    Etiquetas:
-        y3 = 2 → UP   (se alcanza +threshold primero)
-        y3 = 1 → HOLD (no se alcanza ninguna)
-        y3 = 0 → DOWN (se alcanza -threshold primero)
+    Labels (y3):
+        y3 = 2 → UP    (first hit is +threshold)
+        y3 = 1 → HOLD  (no barrier reached)
+        y3 = 0 → DOWN  (first hit is -threshold)
 
-    Devuelve:
-        DataFrame con columnas:
-        - 'y3': etiqueta multicategoría (int8)
-        - 'ret_fwd': retorno futuro porcentual a horizonte h
+    Returns:
+        DataFrame with:
+            - 'y3': multiclass label (int8)
+            - 'ret_fwd': forward return at horizon h
     """
     if not isinstance(prices, pd.Series):
-        raise TypeError("Se esperaba una Serie de precios (pd.Series)")
+        raise TypeError("Expected a price Series (pd.Series)")
 
+    # Future returns matrix
     R = pd.concat([prices.shift(-i) / prices - 1.0 for i in range(1, horizon + 1)], axis=1)
     R.columns = range(1, horizon + 1)
 
@@ -46,18 +47,23 @@ def make_labels_from_prices(prices: pd.Series, horizon: int = 3, threshold: floa
     first_up = np.where(up_any, np.argmax(up_mask, axis=1), -1)
     first_dn = np.where(dn_any, np.argmax(dn_mask, axis=1), -1)
 
-    y = np.full(len(R), 1, dtype=np.int8)  # HOLD por defecto
+    # Default label = HOLD
+    y = np.full(len(R), 1, dtype=np.int8)
 
+    # Only UP or only DOWN
     only_up = (first_up >= 0) & (first_dn < 0)
     only_dn = (first_dn >= 0) & (first_up < 0)
     y[only_up] = 2
     y[only_dn] = 0
 
+    # Both barriers reached → choose first hit
     both = (first_up >= 0) & (first_dn >= 0)
     y[both & (first_up < first_dn)] = 2
     y[both & (first_up > first_dn)] = 0
 
+    # Valid rows = no NaN forward returns
     valid = R.notna().all(axis=1).values
+
     y = pd.Series(y, index=prices.index)
     ret_fwd = (prices.shift(-horizon) / prices) - 1.0
 
@@ -67,19 +73,23 @@ def make_labels_from_prices(prices: pd.Series, horizon: int = 3, threshold: floa
 
 
 # ======================================================
-# 2. Pesos de clase y estadísticos
+# 2. Class weights and statistics
 # ======================================================
 
 def compute_class_weights_triple(y: pd.Series) -> dict:
     """
-    Ponderaciones 'balanced' para clases {0,1,2}:
+    Balanced weights for classes {0, 1, 2}:
         w_c = N / (K * N_c)
     """
     classes = [0, 1, 2]
     present = [c for c in classes if (y == c).any()]
     K = len(present)
     N = len(y)
-    return {c: (float(N) / (K * int((y == c).sum()))) if int((y == c).sum()) > 0 else 0.0 for c in present}
+    return {
+        c: (float(N) / (K * int((y == c).sum())))
+        if int((y == c).sum()) > 0 else 0.0
+        for c in present
+    }
 
 
 def compute_class_stats(y):
@@ -99,11 +109,11 @@ def focal_alphas_from_train(ytr):
     _, freq = compute_class_stats(ytr)
     inv = {k: 1.0 / (freq[k] + 1e-9) for k in freq}
     s = sum(inv.values())
-    return {k: inv[k] / s for k in inv}  # α normalizado
+    return {k: inv[k] / s for k in inv}  # normalized α
 
 
 # ======================================================
-# 3. Alineación con features
+# 3. Alignment with features
 # ======================================================
 
 def build_labels_for_feature_splits(
@@ -116,10 +126,14 @@ def build_labels_for_feature_splits(
     threshold: float = 0.01
 ):
     """
-    Genera etiquetas triple-barrier y las alinea con los features normalizados.
-    Devuelve un dict con X, y, retornos y class_weights para cada split.
+    Generates triple-barrier labels and aligns them with the normalized
+    feature matrices. Returns a dict containing X, y, forward returns,
+    and class_weights for each split.
     """
-    labels_df = make_labels_from_prices(data_ohlcv[price_col], horizon=horizon, threshold=threshold)
+    labels_df = make_labels_from_prices(
+        data_ohlcv[price_col], horizon=horizon, threshold=threshold
+    )
+
     y_all = labels_df["y3"].astype("int64")
     ret_all = labels_df["ret_fwd"]
 
@@ -142,12 +156,12 @@ def build_labels_for_feature_splits(
         "X": {"train": Xtr, "test": Xte, "val": Xva},
         "y": {"train": ytr, "test": yte, "val": yva},
         "ret": {"train": rtr, "test": rte, "val": rva},
-        "class_weights": {"train": cw_tr, "test": cw_te, "val": cw_va}
+        "class_weights": {"train": cw_tr, "test": cw_te, "val": cw_va},
     }
 
 
 # ======================================================
-# 4. Exploración y depuración
+# 4. Exploration and debugging
 # ======================================================
 
 def evaluate_label_distributions_df(
@@ -158,38 +172,50 @@ def evaluate_label_distributions_df(
     price_col="Close"
 ) -> pd.DataFrame:
     """
-    Explora distribuciones SOLO en TRAIN con múltiples (threshold, horizon),
-    usando el esquema triple-barrier.
+    Explores TRAIN-only label distributions for multiple (threshold, horizon)
+    combinations using triple-barrier labeling.
     """
     rows = []
     for thr in thresholds:
         for h in horizons:
-            labels_df = make_labels_from_prices(data_ohlcv[price_col], horizon=h, threshold=thr)
+            labels_df = make_labels_from_prices(
+                data_ohlcv[price_col], horizon=h, threshold=thr
+            )
             y = labels_df["y3"].reindex(feat_train_n.index).dropna().astype("int64")
             dist = y.value_counts().reindex([0, 1, 2], fill_value=0)
             total = int(dist.sum())
             pct0, pct1, pct2 = (dist / total * 100).round(2).tolist()
             cw = compute_class_weights_triple(y)
             rows.append({
-                "threshold": thr, "horizon": h, "n_train_labels": total,
-                "pct_down_0": pct0, "pct_hold_1": pct1, "pct_up_2": pct2,
+                "threshold": thr,
+                "horizon": h,
+                "n_train_labels": total,
+                "pct_down_0": pct0,
+                "pct_hold_1": pct1,
+                "pct_up_2": pct2,
                 "w0": round(cw.get(0, 0.0), 3),
                 "w1": round(cw.get(1, 0.0), 3),
-                "w2": round(cw.get(2, 0.0), 3)
+                "w2": round(cw.get(2, 0.0), 3),
             })
     return pd.DataFrame(rows).sort_values(["horizon", "threshold"]).reset_index(drop=True)
 
 
 def _debug_triple_barrier_view(prices: pd.Series, horizon: int = 3, thr: float = 0.01, n=8):
     """
-    Utilidad de depuración: muestra la matriz de retornos futuros con hits UP/DOWN.
+    Debugging utility: prints the matrix of forward returns with UP/DOWN hits.
     """
-    R = pd.concat([prices.shift(-i) / prices - 1.0 for i in range(1, horizon + 1)], axis=1)
+    R = pd.concat(
+        [prices.shift(-i) / prices - 1.0 for i in range(1, horizon + 1)],
+        axis=1
+    )
     R.columns = [f"+{i}" for i in range(1, horizon + 1)]
+
     up_mask = (R.values >= thr)
     dn_mask = (R.values <= -thr)
+
     up_any = int(up_mask.any(axis=1).sum())
     dn_any = int(dn_mask.any(axis=1).sum())
-    print(f"[DEBUG] horizon={horizon} thr={thr} | filas con UP-hit: {up_any} | DOWN-hit: {dn_any} | total filas: {len(R)}")
+
+    print(f"[DEBUG] horizon={horizon} thr={thr} | rows with UP-hit: {up_any} | DOWN-hit: {dn_any} | total: {len(R)}")
     display(R.head(n))
     return R

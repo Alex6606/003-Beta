@@ -2,18 +2,20 @@
 # normalization.py
 # ============================================
 """
-Módulo de normalización de features según su tipo.
-Permite ajustar escalas heterogéneas (precio, volumen, indicadores bounded, etc.)
-para alimentar modelos neuronales o ML.
+Feature normalization module based on feature type.
+Allows handling heterogeneous scales (price, volume, bounded indicators, etc.)
+before feeding them to neural networks or ML models.
 """
 
 import numpy as np
 import pandas as pd
 
 
-# ===================== Funciones internas =====================
+# ===================== Internal helpers =====================
 def _robust_stats(series: pd.Series):
-    """Calcula mediana e IQR robustos, con fallback si el IQR es 0 o NaN."""
+    """
+    Computes robust median and IQR, with fallback if IQR is zero or NaN.
+    """
     med = series.median()
     q1 = series.quantile(0.25)
     q3 = series.quantile(0.75)
@@ -26,35 +28,35 @@ def _robust_stats(series: pd.Series):
     return float(med), float(iqr)
 
 
-# ===================== Función principal =====================
+# ===================== Main normalization function =====================
 def fit_apply_normalizer(
     features: pd.DataFrame,
     feature_types: dict,
     ref_df: pd.DataFrame | None = None
 ):
     """
-    Ajusta y aplica la normalización por tipo de variable.
+    Fits and applies normalization based on feature type.
 
-    Tipos soportados:
-      - 'asset_scale'    → robust z-score con (mediana, IQR)
-      - 'bounded_0_100'  → divide entre 100
-      - 'bounded_0_1'    → no cambia
-      - 'bounded_-1_1'   → no cambia
+    Supported types:
+      - 'asset_scale'    → robust z-score using (median, IQR)
+      - 'bounded_0_100'  → divided by 100
+      - 'bounded_0_1'    → unchanged
+      - 'bounded_-1_1'   → unchanged
 
-    Parámetros
+    Parameters
     ----------
     features : DataFrame
-        Conjunto de features a normalizar.
+        Feature set to normalize.
     feature_types : dict
-        Mapeo {columna: tipo} según make_features_auto().
-    ref_df : DataFrame, opcional
-        DataFrame de referencia para calcular estadísticas (por ejemplo, TRAIN).
+        Mapping {column: type} produced by make_features_auto().
+    ref_df : DataFrame, optional
+        Reference DataFrame for computing normalization stats (typically TRAIN).
 
-    Retorna
+    Returns
     -------
     (features_norm, norm_stats)
-        features_norm : DataFrame normalizado
-        norm_stats : dict con estadísticas por columna
+        features_norm : normalized DataFrame
+        norm_stats : dict with per-column normalization statistics
     """
     if ref_df is None:
         ref_df = features
@@ -76,10 +78,10 @@ def fit_apply_normalizer(
             norm[col] = norm[col] / 100.0
 
         elif t in ("bounded_0_1", "bounded_-1_1"):
-            stats[col] = {"type": t}  # no transformación
+            stats[col] = {"type": t}  # no transformation
 
         else:
-            # fallback prudente
+            # conservative fallback
             med, iqr = _robust_stats(ref_df[col].dropna())
             stats[col] = {"type": "asset_scale(default)", "median": med, "iqr": iqr}
             denom = iqr if iqr != 0 else 1.0
@@ -95,8 +97,8 @@ def apply_normalizer_from_stats(
     norm_stats: dict
 ) -> pd.DataFrame:
     """
-    Aplica normalización a un nuevo conjunto (ej. TEST o VAL)
-    usando las estadísticas calculadas con fit_apply_normalizer().
+    Applies normalization to a new dataset (e.g., TEST or VAL)
+    using the statistics computed via fit_apply_normalizer().
     """
     norm = features.copy()
     for col in features.columns:
@@ -112,6 +114,6 @@ def apply_normalizer_from_stats(
         elif t == "bounded_0_100":
             norm[col] = norm[col] / 100.0
 
-        # bounded_0_1 y bounded_-1_1 → no transformación
+        # bounded_0_1 and bounded_-1_1 → no transformation
 
     return norm.dropna(how="any").copy()

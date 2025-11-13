@@ -1,5 +1,5 @@
 # ================================================
-# visualization.py — versión ordenada y corregida
+# visualization.py — ordered and cleaned version
 # ================================================
 
 import matplotlib.pyplot as plt
@@ -9,17 +9,17 @@ from sklearn.metrics import confusion_matrix
 
 
 # ============================================================
-# 1. Curvas de equity por split (orden: train → test → val)
+# 1. Equity curves per split (order: train → test → val)
 # ============================================================
 def plot_equity_curves(backtest_results, show_drawdown=True):
     """
-    Muestra las curvas de equity acumuladas de cada split (train/test/val)
-    en orden fijo y limpio. Cada gráfico va separado.
+    Displays accumulated equity curves for each split (train/test/val)
+    in a fixed clean order. Each plot is shown separately.
     """
     splits_order = ["train", "test", "val"]
     colors = {"train": "tab:blue", "test": "tab:green", "val": "tab:orange"}
 
-    # === FIGURA 1: Curvas de equity ===
+    # === FIGURE 1: Equity curves ===
     plt.figure(figsize=(10, 5))
 
     offset = 0
@@ -46,15 +46,15 @@ def plot_equity_curves(backtest_results, show_drawdown=True):
 
         offset += len(equity)
 
-    plt.title("Curvas de Equity por Split (Train → Test → Val)")
-    plt.xlabel("Timestep unificado")
-    plt.ylabel("Equity acumulada")
+    plt.title("Equity Curves per Split (Train → Test → Val)")
+    plt.xlabel("Unified Timestep")
+    plt.ylabel("Accumulated Equity")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.show()
 
-    # === FIGURA 2: Curvas de drawdown (solo si se pide) ===
+    # === FIGURE 2: Drawdowns (only if requested) ===
     if show_drawdown:
         plt.figure(figsize=(10, 4))
 
@@ -79,8 +79,8 @@ def plot_equity_curves(backtest_results, show_drawdown=True):
 
             offset += len(drawdown)
 
-        plt.title("Drawdowns por Split (Train → Test → Val)")
-        plt.xlabel("Timestep unificado")
+        plt.title("Drawdowns per Split (Train → Test → Val)")
+        plt.xlabel("Unified Timestep")
         plt.ylabel("Drawdown")
         plt.legend()
         plt.grid(True)
@@ -89,7 +89,7 @@ def plot_equity_curves(backtest_results, show_drawdown=True):
 
 
 # ============================================================
-# 2. Matriz de confusión
+# 2. Confusion Matrix
 # ============================================================
 def plot_confusion_matrix(y_true, y_pred, classes=(0, 1, 2)):
     cm = confusion_matrix(y_true, y_pred, labels=classes, normalize='true')
@@ -98,19 +98,20 @@ def plot_confusion_matrix(y_true, y_pred, classes=(0, 1, 2)):
         cm, annot=True, fmt=".2f", cmap="Blues",
         xticklabels=classes, yticklabels=classes
     )
-    plt.title("Matriz de Confusión (Normalizada)")
-    plt.xlabel("Predicción")
-    plt.ylabel("Valor Real")
+    plt.title("Confusion Matrix (Normalized)")
+    plt.xlabel("Prediction")
+    plt.ylabel("True Value")
     plt.tight_layout()
     plt.show()
 
 
 # ============================================================
-# 3. Historial del Loss / F1-score
+# 3. Loss / F1-score History
 # ============================================================
 def plot_f1_history(history):
     """
-    Gráfica el loss durante Warmup y Finetune respetando tu estilo previo.
+    Plots the loss curves during Warmup and Finetune,
+    following your previous visual style.
     """
     plt.figure(figsize=(8, 5))
 
@@ -121,11 +122,11 @@ def plot_f1_history(history):
             if "val_loss" in history[phase]:
                 plt.plot(history[phase]["val_loss"], label=f"{phase}_val_loss")
 
-    plt.title("Evolución del Loss durante Entrenamiento")
-    plt.xlabel("Época")
-    plt.ylabel("Pérdida")
+    plt.title("Loss Evolution During Training")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-#Cambios Finales
+

@@ -2,23 +2,24 @@
 # backtest.py
 # ==========================================================
 """
-Backtest avanzado (vectorizado) para estrategias basadas en señales discretas {-1, 0, +1}.
-Incluye:
- - Stop-loss / Take-profit (porcentuales)
- - Costos de trading y borrow dinámico
- - Métricas de desempeño (Sharpe, CAGR, MDD, WinRate)
- - Curvas de equity y drawdown
+Advanced vectorized backtesting for strategies based on
+discrete signals {-1, 0, +1}.
 
+Includes:
+ - Percentual Stop-loss / Take-profit
+ - Trading and borrow costs
+ - Performance metrics (Sharpe, Sortino, Calmar, MDD, WinRate)
+ - Equity & drawdown curves
 """
 
 import numpy as np
 import pandas as pd
 
 
-# === Conversión de etiquetas CNN → señales de trading ===
+# === Mapping CNN labels → trading signals ===
 def y_to_signal(y_pred):
     """
-    Mapea las clases de la CNN {0, 1, 2} → {-1, 0, +1}
+    Maps CNN classes {0, 1, 2} → {-1, 0, +1}
       0 = short, 1 = hold, 2 = long
     """
     y_pred = np.asarray(y_pred).ravel()
@@ -26,7 +27,7 @@ def y_to_signal(y_pred):
     return np.vectorize(mapping.get)(y_pred)
 
 
-# === Backtest avanzado ===
+# === Advanced Backtest ===
 def backtest_advanced(
     close: pd.Series,
     idx: pd.Index,
@@ -38,21 +39,22 @@ def backtest_advanced(
     tp_pct: float = 0.03,
 ):
     """
-    Backtest vectorizado avanzado con SL/TP aproximado.
-    Incluye métricas extendidas: Sharpe, Sortino, Calmar, MDD, WinRate.
+    Advanced vectorized backtest with approximate SL/TP modeling.
+    Includes extended metrics: Sharpe, Sortino, Calmar, MDD, WinRate.
     """
 
+    # Align signals to price index
     sig = pd.Series(signal, index=idx).astype(float)
     sig = sig.reindex(close.index).fillna(0.0)
 
-    # Retornos diarios del activo
+    # Daily returns of the asset
     r = close.pct_change().fillna(0.0)
 
-    # Posición efectiva
+    # Effective position
     pos = sig.shift(1).fillna(0.0)
 
     # =============================
-    # Costos de trading y préstamo
+    # Trading & Borrow Costs
     # =============================
     turnover = (pos - pos.shift(1).fillna(0.0)).abs()
     trading_cost = turnover * fee
@@ -61,7 +63,7 @@ def backtest_advanced(
     borrow_cost = borrow_daily * (pos < 0).astype(float).abs()
 
     # =============================
-    # Retorno base del modelo
+    # Base Strategy Return
     # =============================
     strat_ret = pos * r
 
@@ -71,25 +73,25 @@ def backtest_advanced(
     sl_hit = ((r < -sl_pct) & (pos > 0)) | ((r > sl_pct) & (pos < 0))
     tp_hit = ((r > tp_pct) & (pos > 0)) | ((r < -tp_pct) & (pos < 0))
 
-    # Aplica SL/TP
+    # Apply SL/TP
     strat_ret = np.where(sl_hit, -sl_pct, strat_ret)
     strat_ret = np.where(tp_hit, tp_pct, strat_ret)
 
     # =============================
-    # Costos finales
+    # Final Costs
     # =============================
     strat_ret = strat_ret - trading_cost - borrow_cost
 
     # =============================
-    # Equity curve
+    # Equity Curve
     # =============================
     eq = (1.0 + strat_ret).cumprod()
 
-    # Drawdown
+    # Drawdown series
     dd = eq / eq.cummax() - 1.0
 
     # =============================
-    # Métricas clásicas
+    # Core Performance Metrics
     # =============================
     mu = strat_ret.mean() * freq
     sigma = strat_ret.std(ddof=1) * np.sqrt(freq)
@@ -100,7 +102,7 @@ def backtest_advanced(
     win_rate = float((strat_ret > 0).mean())
 
     # =============================
-    # MÉTRICAS NUEVAS
+    # Extended Metrics
     # =============================
 
     # --- Sortino Ratio ---
@@ -121,8 +123,8 @@ def backtest_advanced(
         "metrics": {
             "CAGR": cagr,
             "Sharpe": sharpe,
-            "Sortino": sortino,      # ⬅️ Nuevo
-            "Calmar": calmar,        # ⬅️ Nuevo
+            "Sortino": sortino,
+            "Calmar": calmar,
             "MaxDrawdown": mdd,
             "AnnualVol": sigma,
             "WinRate": win_rate,
@@ -130,5 +132,3 @@ def backtest_advanced(
             "TP_hits": int(tp_hit.sum()),
         },
     }
-
-

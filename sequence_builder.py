@@ -2,8 +2,8 @@
 # sequence_builder.py
 # ============================================
 """
-Módulo para transformar conjuntos tabulares (X, y)
-en secuencias 3D para modelos CNN o RNN.
+Module for transforming tabular datasets (X, y)
+into 3D sequences for CNN or RNN models.
 """
 
 import numpy as np
@@ -17,41 +17,41 @@ def make_sequences(
     step: int = 1
 ):
     """
-    Convierte (X_df, y_ser) → (X_seq, y_seq, idx)
-    para entrenamiento de modelos CNN/LSTM.
+    Converts (X_df, y_ser) → (X_seq, y_seq, idx)
+    for training CNN/LSTM models.
 
-    Parámetros
+    Parameters
     ----------
     X_df : pd.DataFrame
-        Features normalizados con índice temporal.
+        Normalized feature matrix with a time index.
     y_ser : pd.Series
-        Etiquetas alineadas (clases 0/1/2).
+        Aligned labels (classes 0/1/2).
     window : int
-        Longitud de la ventana temporal.
+        Length of the rolling time window.
     step : int
-        Desplazamiento entre muestras consecutivas.
+        Step size between consecutive samples.
 
-    Retorna
+    Returns
     -------
     X_seq : np.ndarray (n_samples, window, n_features)
     y_seq : np.ndarray (n_samples,)
-    idx_seq : pd.Index de las fechas correspondientes
+    idx_seq : pd.Index containing the corresponding dates
     """
-    # --- Validaciones ---
+    # --- Validations ---
     if not isinstance(X_df, pd.DataFrame):
-        raise TypeError("X_df debe ser DataFrame")
+        raise TypeError("X_df must be a DataFrame")
     if not isinstance(y_ser, pd.Series):
-        raise TypeError("y_ser debe ser Series")
+        raise TypeError("y_ser must be a Series")
     if window < 1 or step < 1:
-        raise ValueError("window y step deben ser >= 1")
+        raise ValueError("window and step must be >= 1")
 
-    # --- Alineación por índice ---
+    # --- Index alignment ---
     y_aligned = y_ser.reindex(X_df.index)
     mask = y_aligned.notna()
 
     if mask.sum() < window:
         raise ValueError(
-            f"No hay suficientes muestras tras alinear (n={mask.sum()}) para window={window}"
+            f"Not enough samples after alignment (n={mask.sum()}) for window={window}"
         )
 
     X_base = X_df.loc[mask]
@@ -62,7 +62,7 @@ def make_sequences(
     y = y_base.values
     n, n_feat = X.shape
 
-    # --- Construcción de secuencias ---
+    # --- Build sequences ---
     X_seq, y_seq, idx_seq = [], [], []
     start = window - 1
     for i in range(start, n, step):
@@ -74,7 +74,7 @@ def make_sequences(
         idx_seq.append(idx_base[i])
 
     if len(X_seq) == 0:
-        raise ValueError("No se generaron secuencias; revisa window/step y tamaño del dataset.")
+        raise ValueError("No sequences generated; check window/step and dataset size.")
 
     X_seq = np.asarray(X_seq, dtype=np.float32)
     y_seq = np.asarray(y_seq, dtype=np.int64)
@@ -91,8 +91,8 @@ def build_cnn_sequences_for_splits(
     step: int = 1
 ):
     """
-    Aplica make_sequences a cada split (train/test/val)
-    garantizando alineación temporal sin fugas.
+    Applies make_sequences to each split (train/test/val),
+    ensuring correct temporal alignment without leakage.
     """
     Xtr_seq, ytr_seq, itrg = make_sequences(X_train, y_train, window=window, step=step)
     Xte_seq, yte_seq, iteg = make_sequences(X_test,  y_test,  window=window, step=step)

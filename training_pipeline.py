@@ -2,19 +2,19 @@
 # training_pipeline.py
 # ============================================
 """
-Pipeline completo de entrenamiento y evaluación para el modelo CNN-1D.
-Incluye:
- - Inferencia de priors, alphas y objetivos KL
- - Entrenamiento two-phase (CE + Focal)
- - Calibración por temperatura
- - Ajuste de umbrales y biases
- - Evaluación final (TEST/VAL)
+Full training and evaluation pipeline for the 1D-CNN model.
+Includes:
+ - Inference of priors, alphas, and KL targets
+ - Two-phase training (CE + Focal)
+ - Temperature calibration
+ - Threshold and bias tuning
+ - Final evaluation (TEST/VAL)
 """
 from typing import Tuple, Dict, Any
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
-# 👇 añadido para usar mlflow.active_run() y construir model_uri
+# 👇 Added to use mlflow.active_run() and construct model_uri
 import mlflow
 
 from backtest import y_to_signal, backtest_advanced
@@ -34,13 +34,13 @@ from threshold_tuning import tune_thresholds_by_class, coordinate_ascent_thresho
 from trainer import train_two_phase_v4
 
 
-# === Config común ===
+# === Common config ===
 CLASSES = [0, 1, 2]
 
 
-# === Métricas y utilidades ===
+# === Metrics and utilities ===
 def _metrics_and_confusion(y_true, y_pred) -> Tuple[Dict[str, float], np.ndarray]:
-    """Calcula macroF1, accuracy y matriz de confusión ordenada."""
+    """Computes macroF1, accuracy, and the ordered confusion matrix."""
     y_true = np.asarray(y_true).ravel()
     y_pred = np.asarray(y_pred).ravel()
     m = {
@@ -71,10 +71,10 @@ def _print_metrics_block(tag: str, m: Dict[str, float]):
 # === Priors / alphas ===
 def _infer_priors_and_alphas(ytr_seq, cw_train_cb, beta=0.995, tau_alpha=0.90):
     """
-    Estima:
-      - pi_train (priors empíricos)
-      - alphas (para Focal)
-      - prior_target (mezcla 70% priors + 30% uniforme)
+    Computes:
+      - pi_train (empirical priors)
+      - alphas (for Focal Loss)
+      - prior_target (70% priors + 30% uniform)
     """
     ytr_seq = np.asarray(ytr_seq).ravel()
     n_classes = int(np.max(ytr_seq)) + 1
@@ -93,7 +93,7 @@ def _infer_priors_and_alphas(ytr_seq, cw_train_cb, beta=0.995, tau_alpha=0.90):
     return pi_train.astype(np.float32), alphas, prior_target
 
 
-# === Wrapper de alto nivel ===
+# === High-level wrapper ===
 def train_eval_from_raw(
     X_train, y_train, X_val, y_val, X_test, y_test,
     cw_train_cb,
@@ -105,7 +105,7 @@ def train_eval_from_raw(
     close_series=None, train_idx=None, val_idx=None, test_idx=None,
     feature_names=None
 ):
-    """Construye secuencias y lanza entrenamiento/evaluación completa (con soporte para backtesting)."""
+    """Builds sequences and launches the full training/evaluation workflow (with backtesting support)."""
     seq_bundle = build_cnn_sequences_for_splits(
         X_train, y_train, X_test, y_test, X_val, y_val,
         window=seq_window, step=seq_step
@@ -115,7 +115,7 @@ def train_eval_from_raw(
     Xte_seq, yte_seq = seq_bundle["test"]["X"],  seq_bundle["test"]["y"]
     Xva_seq, yva_seq = seq_bundle["val"]["X"],   seq_bundle["val"]["y"]
 
-    # Priors / alphas si faltan
+    # Priors/alphas if none provided
     if (pi_train is None) or (prior_target is None) or (alphas is None):
         pi_train, alphas, prior_target = _infer_priors_and_alphas(ytr_seq, cw_train_cb)
 
@@ -144,7 +144,7 @@ def train_eval_from_raw(
     return res
 
 
-# === Entrenamiento, calibración y evaluación ===
+# === Training, calibration, evaluation ===
 def train_eval_one_config(
     Xtr_seq, ytr_seq, Xva_seq, yva_seq, Xte_seq, yte_seq,
     cw_train_cb: Dict[int, float],
@@ -152,26 +152,27 @@ def train_eval_one_config(
     prior_target: np.ndarray,
     alphas: np.ndarray,
     gamma: float = 1.2,
-    # arquitectura
+    # architecture
     model_builder_kwargs: Dict[str, Any] = None,
-    # entrenamiento
+    # training
     epochs_warmup: int = 18, epochs_finetune: int = 12, batch_size: int = 64,
     label_smoothing: float = 0.02, lambda_kl: float = 0.05,
     kl_temperature: float = 1.5, tau_la: float = 0.6,
     # TILT / SHRINK / BIAS
     shrink_lambda: float = 0.85,
     bias_grids: Dict[str, np.ndarray] = None,
-    # datos para backtest
+    # data for backtest
     close_series=None,
     train_idx=None, val_idx=None, test_idx=None,
-    # verbosidad
+    # verbosity
     verbose: int = 1,
     feature_names=None
 ) -> Dict[str, Any]:
     """
-    Versión extendida con backtesting sobre train/val/test (usa backtest_advanced).
+    Extended version with advanced backtesting over train/val/test
+    using backtest_advanced().
     """
-    # --- Modelo base ---
+    # --- Base model ---
     if model_builder_kwargs is None:
         model_builder_kwargs = dict(
             n_features=Xtr_seq.shape[-1], window=Xtr_seq.shape[1],
@@ -188,7 +189,7 @@ def train_eval_one_config(
 
     model = build_cnn_1d_logits(**model_builder_kwargs)
 
-    # --- Entrenamiento ---
+    # --- Training ---
     model, history = train_two_phase_v4(
         model,
         Xtr_seq, ytr_seq, Xva_seq, yva_seq,
@@ -208,8 +209,8 @@ def train_eval_one_config(
         reduce_on_plateau=True
     )
 
-    # --- Calibración (usar VAL) ---
-    logits_tr   = model.predict(Xtr_seq, verbose=0)   # ✅ añadimos TRAIN para backtest
+    # --- Calibration (using VAL) ---
+    logits_tr   = model.predict(Xtr_seq, verbose=0)   # Also TRAIN for backtest
     logits_val  = model.predict(Xva_seq, verbose=0)
     logits_test = model.predict(Xte_seq, verbose=0)
 
@@ -221,7 +222,7 @@ def train_eval_one_config(
     proba_val  = softmax_T(logits_val,  T)
     proba_test = softmax_T(logits_test, T)
 
-    # --- Threshold tuning (en VAL) ---
+    # --- Threshold tuning (on VAL) ---
     thr0 = tune_thresholds_by_class(
         yva_seq, proba_val,
         metric_fn=lambda yt, yp: f1_score(yt, yp, average="macro", zero_division=0)
@@ -232,9 +233,9 @@ def train_eval_one_config(
         rounds=2
     )
     if verbose:
-        print("Umbrales base (VAL):", np.round(thr_refined, 3), "| macroF1_VAL:", round(best_val_macro, 4))
+        print("Base thresholds (VAL):", np.round(thr_refined, 3), "| macroF1_VAL:", round(best_val_macro, 4))
 
-    # --- Prior shift (BBSE) para TEST ---
+    # --- Prior shift (BBSE) for TEST ---
     pi_test_bbse, C = bbse_prior_shift_soft(
         pi_train, yva_seq, proba_val, proba_test,
         lam_ridge=1e-2, eps=1e-6
@@ -243,7 +244,7 @@ def train_eval_one_config(
     logits_test_adj = logits_test + logit_shift.reshape(1, -1)
     proba_test_bbse = softmax_T(logits_test_adj, T)
 
-    # --- Tilt thresholds (re-sintoniza thresholds en VAL con prior de TEST) ---
+    # --- Tilt thresholds (VAL, using TEST priors) ---
     w_ratio = (pi_test_bbse / np.clip(pi_train, 1e-6, 1.0)).reshape(1, -1)
     proba_val_tilt = proba_val * w_ratio
     proba_val_tilt /= proba_val_tilt.sum(axis=1, keepdims=True)
@@ -257,7 +258,7 @@ def train_eval_one_config(
         rounds=2
     )
 
-    # --- Bias search (en VAL, sobre thresholds tilt) ---
+    # --- Bias search (VAL, thresholds tilt) ---
     best_val_score, best_bias = search_logit_biases(
         logits_val, yva_seq, thr_refined_tilt, T=T,
         grid_d0=bias_grids["grid_d0"],
@@ -268,7 +269,7 @@ def train_eval_one_config(
         print("Best bias on VAL:", tuple(float(f"{x:.3f}") for x in best_bias),
               " macroF1_VAL:", round(best_val_score, 4))
 
-    # --- Pred FINAL en cada split ---
+    # --- Final predictions ---
     # TEST: BBSE + bias + thresholds tilt
     logits_test_bbse_bias = logits_test_adj + np.array(best_bias, float).reshape(1, -1)
     proba_test_final      = softmax_T(logits_test_bbse_bias, T)
@@ -279,25 +280,25 @@ def train_eval_one_config(
     proba_val_final = softmax_T(logits_val_bias, T)
     yva_hat_final   = apply_thresholds(proba_val_final, thr_refined_tilt)
 
-    # TRAIN: bias + thresholds tilt (sin BBSE)
+    # TRAIN: bias + thresholds tilt (no BBSE)
     logits_tr_bias = logits_tr + np.array(best_bias, float).reshape(1, -1)
     proba_tr_final = softmax_T(logits_tr_bias, T)
     ytr_hat_final  = apply_thresholds(proba_tr_final, thr_refined_tilt)
 
-    # ==== Métricas y matrices TEST/VAL ====
+    # ==== Metrics and confusion matrices TEST/VAL ====
     m_test, cm_test = _metrics_and_confusion(yte_seq, yte_hat_final)
     m_val,  cm_val  = _metrics_and_confusion(yva_seq, yva_hat_final)
 
     if verbose:
         print("\n[TEST] -------")
         _print_metrics_block("TEST (FINAL)", m_test)
-        _print_cm_block("Matriz de confusión (TEST, FINAL):", cm_test, _pred_dist(yte_hat_final))
+        _print_cm_block("Confusion matrix (TEST, FINAL):", cm_test, _pred_dist(yte_hat_final))
 
         print("\n[VAL] --------")
         _print_metrics_block("VAL  (FINAL)", m_val)
-        _print_cm_block("Matriz de confusión (VAL,  FINAL):", cm_val, _pred_dist(yva_hat_final))
+        _print_cm_block("Confusion matrix (VAL, FINAL):", cm_val, _pred_dist(yva_hat_final))
 
-    # === Backtest AVANZADO sobre train/val/test ===
+    # === Advanced backtest over train/val/test ===
     backtest_results = {}
     if close_series is not None:
         for split_name, idx, y_pred in [
@@ -308,12 +309,12 @@ def train_eval_one_config(
             if idx is None or len(idx) == 0:
                 continue
 
-            # === Sincroniza longitudes ===
+            # --- Synchronize lengths ---
             n = min(len(idx), len(y_pred))
             aligned_idx = idx[-n:]
             aligned_signal = y_to_signal(y_pred[-n:])
 
-            # === Corre el backtest avanzado ===
+            # --- Run advanced backtest ---
             bt = backtest_advanced(
                 close=close_series.loc[aligned_idx],
                 idx=aligned_idx,
@@ -337,7 +338,7 @@ def train_eval_one_config(
                   f"Final Return={backtest_results[split_name]['final_return']:.3f}, "
                   f"Sharpe={backtest_results[split_name]['sharpe']:.3f}")
 
-    # --- Empaque de resultados (mantiene la forma que usa summarize_run/visualization) ---
+    # --- Final results packaging (compatible with summarize_run/visualization) ---
     res = {
         "cfg": {
             "cw_train_cb": cw_train_cb,
@@ -377,6 +378,7 @@ def train_eval_one_config(
         },
         "backtest": backtest_results,
     }
+
     run_name = f"CNN_win{Xtr_seq.shape[1]}_gamma{gamma}_sh{shrink_lambda}"
     start_mlflow_run(
         experiment_name="DeepCNN_Trading",
@@ -385,7 +387,7 @@ def train_eval_one_config(
     )
 
     try:
-        # 1) Hiperparámetros y config
+        # 1) Hyperparameters and config
         cfg_dict = {
             "gamma": gamma,
             "epochs_warmup": epochs_warmup,
@@ -402,8 +404,7 @@ def train_eval_one_config(
         }
         log_params(cfg_dict, prefix="train_")
 
-        # 2) Métricas principales
-        #   macroF1/acc de VAL y TEST finales (coinciden con res["metrics"])
+        # 2) Main metrics
         log_metrics({
             "val_macro_f1": float(m_val["macro_f1"]),
             "val_acc": float(m_val["acc"]),
@@ -411,11 +412,10 @@ def train_eval_one_config(
             "test_acc": float(m_test["acc"]),
         })
 
-        # 3) Métricas de backtest si existen
+        # 3) Backtest metrics if available
         if "backtest" in locals() and isinstance(backtest_results, dict):
             for split, bt in backtest_results.items():
                 mets = bt.get("metrics", {})
-                # nombres estandarizados
                 tolog = {}
                 for mk in ["CAGR", "Sharpe", "MaxDrawdown", "AnnualVol", "WinRate"]:
                     if mk in mets:
@@ -425,7 +425,7 @@ def train_eval_one_config(
                 if tolog:
                     log_metrics(tolog)
 
-        # 4) Artefactos relevantes
+        # 4) Artifacts
         art = {
         "T": float(T),
         "pi_train": pi_train.tolist(),
@@ -436,49 +436,48 @@ def train_eval_one_config(
         }
         log_artifacts_dict(art, artifact_name="artifacts.json")
 
-        # 🔴 NUEVO: guarda el orden de columnas (‘feature_names’) si te lo mandaron
+        # 🔴 NEW: save column order (‘feature_names’) if provided
         if feature_names is not None:
             try:
-                # usa directamente mlflow.log_dict por si tu helper no escribe el archivo
                 import mlflow
                 mlflow.log_dict({
                     "feature_names": list(map(str, feature_names)),
-                    "feature_types": {f: "float" for f in feature_names},  # o tu dict real
-                    "norm_stats": {f: {"mean": 0, "std": 1} for f in feature_names}  # si no guardas los reales
+                    "feature_types": {f: "float" for f in feature_names},
+                    "norm_stats": {f: {"mean": 0, "std": 1} for f in feature_names}
                 }, "feature_stats.json")
-                print("[MLflow] feature_stats.json loggeado.")
+                print("[MLflow] feature_stats.json logged.")
             except Exception as e:
-                print("[WARN] No se pudo sloggear feature_stats.json:", e)
-        # 5) Modelo (artefacto del run)
+                print("[WARN] Could not log feature_stats.json:", e)
+
+        # 5) Model artifact
         log_model_keras(model, artifact_path="model")
 
-        # 6) 🔴 NUEVO: construir y persistir el URI del modelo (sin Registry)
-        import mlflow  # 👈 AÑADE ESTA LÍNEA AQUÍ
+        # 6) 🔴 Create and persist model URI (local, no registry)
+        import mlflow
         active_run = mlflow.active_run()
         if active_run is not None:
             model_uri = f"runs:/{active_run.info.run_id}/model"
             print("[MLflow] Model URI:", model_uri)
 
-            # lo guardamos como archivo de conveniencia para la API
             try:
                 with open("latest_model_uri.txt", "w", encoding="utf-8") as f:
                     f.write(model_uri)
             except Exception as e:
-                print("[WARN] No se pudo escribir latest_model_uri.txt:", e)
+                print("[WARN] Could not write latest_model_uri.txt:", e)
 
-            # opcional: también dejarlo como artefacto JSON dentro del run
             try:
                 log_artifacts_dict({"model_uri": model_uri}, artifact_name="model_uri.json")
             except Exception as e:
-                print("[WARN] No se pudo loggear model_uri.json:", e)
+                print("[WARN] Could not log model_uri.json:", e)
 
     finally:
         end_mlflow_run()
-    # === fin MLflow logging ===
+
     return res
 
 
 def summarize_run(res: Dict[str, Any]):
+    """Pretty printing of main results after running train_eval."""
     cfg  = res.get("cfg", {})
     art  = res.get("artifacts", {})
     mets = res.get("metrics", {})
@@ -495,9 +494,9 @@ def summarize_run(res: Dict[str, Any]):
     if "pi_test_bbse" in art:
         print("pi_test_est (BBSE-soft):", np.round(np.array(art["pi_test_bbse"]), 3))
     if "thr_refined" in art:
-        print("Umbrales base (VAL):", np.round(np.array(art["thr_refined"]), 3))
+        print("Base thresholds (VAL):", np.round(np.array(art["thr_refined"]), 3))
     if "thr_refined_tilt" in art:
-        print("Umbrales tilt (VAL):", np.round(np.array(art["thr_refined_tilt"]), 3))
+        print("Tilt thresholds (VAL):", np.round(np.array(art["thr_refined_tilt"]), 3))
     if "best_bias" in art:
         print("Best bias on VAL:", tuple(np.round(np.array(art["best_bias"]), 3)))
     if "shrink_lambda" in cfg:
@@ -509,9 +508,8 @@ def summarize_run(res: Dict[str, Any]):
     _print_metrics_block("TEST (FINAL)", mt_final)
     y_true_te, y_pred_te = ytp.get("test", ([], []))
 
-    # Si no hay confusion matrix en res, la generamos
     cm_test = confusion_matrix(y_true_te, y_pred_te, labels=[0, 1, 2])
-    _print_cm_block("Matriz de confusión (TEST, FINAL):", cm_test, _pred_dist(y_pred_te))
+    _print_cm_block("Confusion matrix (TEST, FINAL):", cm_test, _pred_dist(y_pred_te))
 
     # === VAL ===
     print("\n[VAL] --------")
@@ -519,7 +517,7 @@ def summarize_run(res: Dict[str, Any]):
     _print_metrics_block("VAL  (FINAL)", mv_final)
     y_true_va, y_pred_va = ytp.get("val", ([], []))
     cm_val = confusion_matrix(y_true_va, y_pred_va, labels=[0, 1, 2])
-    _print_cm_block("Matriz de confusión (VAL, FINAL):", cm_val, _pred_dist(y_pred_va))
+    _print_cm_block("Confusion matrix (VAL, FINAL):", cm_val, _pred_dist(y_pred_va))
 
     print(f"\nF1-macro  TEST: {mt_final.get('macro_f1', 0):.3f} | VAL: {mv_final.get('macro_f1', 0):.3f}")
     print(f"Acc       TEST: {mt_final.get('acc', 0):.3f}   | VAL: {mv_final.get('acc', 0):.3f}")
@@ -538,9 +536,9 @@ def print_run_artifacts(art: Dict[str, Any]):
     if 'pi_test_bbse' in art:
         print("pi_test_est (BBSE-soft):", np.round(np.array(art['pi_test_bbse']), 3))
     if 'thr_refined' in art:
-        print("Umbrales base (VAL):", np.round(np.array(art['thr_refined']), 3))
+        print("Base thresholds (VAL):", np.round(np.array(art['thr_refined']), 3))
     if 'thr_refined_tilt' in art:
-        print("Umbrales tilt (VAL):", np.round(np.array(art['thr_refined_tilt']), 3))
+        print("Tilt thresholds (VAL):", np.round(np.array(art['thr_refined_tilt']), 3))
     if 'best_bias' in art:
         bb = np.array(art['best_bias'], dtype=float).tolist()
         print("Best bias on VAL:", tuple(bb))
@@ -558,19 +556,17 @@ def _supports(y):
 
 def sanity_check_from_res(res):
     """
-    Verifica coherencia básica entre supports y matrices de confusión.
-    Adaptada a la nueva estructura de 'y_true_pred' (tuplas directas).
+    Basic consistency checks for supports vs confusion matrices.
+    Adapted to the new structure of 'y_true_pred' (direct tuples).
     """
     ytp = res.get("y_true_pred", {})
 
-    # === TEST ===
     if "test" in ytp:
         yte_true, yte_pred = ytp["test"]
         cm_test = confusion_matrix(yte_true, yte_pred, labels=[0, 1, 2])
         print("Supports TEST:", [int((yte_true == c).sum()) for c in [0, 1, 2]],
               "| Row sums TEST (FINAL):", cm_test.sum(axis=1).tolist())
 
-    # === VAL ===
     if "val" in ytp:
         yva_true, yva_pred = ytp["val"]
         cm_val = confusion_matrix(yva_true, yva_pred, labels=[0, 1, 2])
@@ -580,9 +576,9 @@ def sanity_check_from_res(res):
 
 def collect_split_metrics(res):
     """
-    Extrae métricas, matrices de confusión y distribuciones de señales
-    para train/val/test sin imprimir nada.
-    Ideal para reportes en main.py u otros módulos.
+    Extracts metrics, confusion matrices and signal distributions
+    for train/val/test without printing.
+    Useful for main.py or other reporting modules.
     """
     from sklearn.metrics import confusion_matrix
     out = {}
@@ -599,16 +595,13 @@ def collect_split_metrics(res):
         y_pred = np.asarray(y_pred).ravel()
         cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
 
-        # métricas
         m = {
             "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
             "acc": float(accuracy_score(y_true, y_pred)),
         }
 
-        # distribución predicha
         pred_dist = {c: float((y_pred == c).sum()) / len(y_pred) for c in [0, 1, 2]}
 
-        # señales (-1,0,1)
         signals = y_to_signal(y_pred)
         sig_dist = {s: float((signals == s).sum()) / len(signals) for s in [-1, 0, 1]}
 

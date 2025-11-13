@@ -1,5 +1,5 @@
 # ============================================================
-# main.py — Deep Learning Trading with CNN + Backtesting Avanzado (Refactor Final)
+# main.py — Deep Learning Trading with CNN + Advanced Backtesting (Final Refactor)
 # ============================================================
 
 from data_utils import get_data
@@ -14,7 +14,7 @@ import numpy as np
 from collections import Counter
 
 
-# === CONFIGURACIÓN CENTRAL ===
+# === CENTRAL CONFIGURATION ===
 CONFIG = {
     "seq_window": 60,
     "seq_step": 1,
@@ -31,7 +31,7 @@ CONFIG = {
 
 
 # ============================================================
-# Utilidades de reporte interno
+# Internal reporting utilities
 # ============================================================
 
 def _dist_fmt(cnt, total, labels, label_names=None):
@@ -43,15 +43,17 @@ def _dist_fmt(cnt, total, labels, label_names=None):
         parts.append(f"{name}: {c:4d} ({p:5.1f}%)")
     return " | ".join(parts)
 
+
 def print_pred_distributions(res_obj):
     """
-    Imprime distribuciones de clases (0/1/2) y señales (-1/0/1) para train, val y test.
+    Prints class distributions (0/1/2) and signal distributions (-1/0/1)
+    for train, val, and test splits.
     """
     if "y_true_pred" not in res_obj:
-        print("[pred_props] No hay y_true_pred en res.")
+        print("[pred_props] No y_true_pred found in results.")
         return
 
-    print("\n========== Distribuciones de Clases y Señales ==========\n")
+    print("\n========== Class & Signal Distributions ==========\n")
 
     for split in ("train", "val", "test"):
         if split not in res_obj["y_true_pred"]:
@@ -69,10 +71,11 @@ def print_pred_distributions(res_obj):
         cnt_sig = Counter(sig)
 
         print(f"\n=== {split.upper()} ===")
-        print(f"Total muestras: {n}")
-        print("Real     (0/1/2): " + _dist_fmt(cnt_true, n, [0, 1, 2]))
-        print("Predicho (0/1/2): " + _dist_fmt(cnt_pred, n, [0, 1, 2]))
-        print("Señales (-1/0/1): " + _dist_fmt(cnt_sig, n, [-1, 0, 1], ["SHORT(-1)", "HOLD(0)", "LONG(1)"]))
+        print(f"Total samples: {n}")
+        print("True     (0/1/2): " + _dist_fmt(cnt_true, n, [0, 1, 2]))
+        print("Predicted (0/1/2): " + _dist_fmt(cnt_pred, n, [0, 1, 2]))
+        print("Signals (-1/0/1): " +
+              _dist_fmt(cnt_sig, n, [-1, 0, 1], ["SHORT(-1)", "HOLD(0)", "LONG(1)"]))
 
 
 # ============================================================
@@ -83,19 +86,19 @@ if __name__ == "__main__":
     # ---------------------------
     # 1) DATA
     # ---------------------------
-    print("=== Descargando datos ===")
+    print("=== Downloading data ===")
     data = get_data("MSFT")
 
-    print("\n=== Construyendo features y normalizando ===")
+    print("\n=== Building features and normalizing ===")
     bundle = build_and_normalize_features_per_split(data, windows=WINDOWS, warmup=200)
     export_features_for_drift(bundle)
 
     feat_train_n = bundle["norm"]["train"]
-    feat_test_n  = bundle["norm"]["test"]
-    feat_val_n   = bundle["norm"]["val"]
+    feat_test_n = bundle["norm"]["test"]
+    feat_val_n = bundle["norm"]["val"]
 
     # LABELS
-    print("\n=== Construyendo etiquetas ===")
+    print("\n=== Building labels ===")
     labels_bundle = build_labels_for_feature_splits(
         data_ohlcv=data,
         feat_train_n=feat_train_n,
@@ -107,18 +110,18 @@ if __name__ == "__main__":
     )
 
     X_train, y_train = labels_bundle["X"]["train"], labels_bundle["y"]["train"]
-    X_test,  y_test  = labels_bundle["X"]["test"],  labels_bundle["y"]["test"]
-    X_val,   y_val   = labels_bundle["X"]["val"],   labels_bundle["y"]["val"]
+    X_test, y_test = labels_bundle["X"]["test"], labels_bundle["y"]["test"]
+    X_val, y_val = labels_bundle["X"]["val"], labels_bundle["y"]["val"]
 
     idx_train = feat_train_n.index
-    idx_test  = feat_test_n.index
-    idx_val   = feat_val_n.index
+    idx_test = feat_test_n.index
+    idx_val = feat_val_n.index
     close_series = data["Close"]
 
     # ---------------------------
     # 2) TRAINING + EVALUATION
     # ---------------------------
-    print("\n=== Entrenando modelo CNN-1D ===")
+    print("\n=== Training CNN-1D model ===")
     res = train_eval_from_raw(
         X_train, y_train,
         X_val, y_val,
@@ -139,17 +142,17 @@ if __name__ == "__main__":
     # ---------------------------
     # 3) REPORTS
     # ---------------------------
-    print("\n========== RESUMEN DEL RUN ==========")
+    print("\n========== RUN SUMMARY ==========")
     summarize_run(res)
     sanity_check_from_res(res)
 
-    # DISTRIBUCIONES
+    # CLASS/SIGNAL DISTRIBUTIONS
     print_pred_distributions(res)
 
     # ===========================================================
     # 4) BACKTEST (Train → Test → Val)
     # ===========================================================
-    print("\n========== BACKTESTS AVANZADOS POR SPLIT ==========\n")
+    print("\n========== ADVANCED BACKTESTS PER SPLIT ==========\n")
 
     ORDER = ["train", "test", "val"]
 
@@ -165,9 +168,9 @@ if __name__ == "__main__":
             print()
 
     # ===========================================================
-    # Métricas Globales (promedio Train/Test/Val)
+    # Global Metrics (average Train/Test/Val)
     # ===========================================================
-    print("\n=== Métricas Globales (Promedio Train/Test/Val) ===")
+    print("\n=== Global Metrics (Average Train/Test/Val) ===")
 
     if "backtest" in res:
         def avg(metric):
@@ -177,7 +180,6 @@ if __name__ == "__main__":
             ]
             return sum(vals) / len(vals)
 
-
         print(f"Global CAGR:       {avg('CAGR'):.4f}")
         print(f"Global Sharpe:     {avg('Sharpe'):.4f}")
         print(f"Global Sortino:    {avg('Sortino'):.4f}")
@@ -186,22 +188,21 @@ if __name__ == "__main__":
         print(f"Global MaxDD:      {avg('MaxDrawdown'):.4f}")
 
     # ===========================================================
-    # 5) VISUALIZACIONES
+    # 5) VISUALIZATIONS
     # ===========================================================
-    print("\n========== Visualizaciones ==========\n")
+    print("\n========== Visualizations ==========\n")
 
-    # 1) Curvas de equity (split ordenado Train → Test → Val)
+    # Equity curves (Train → Test → Val)
     if "backtest" in res:
         plot_equity_curves(res["backtest"], show_drawdown=True)
 
-    # 2) Matriz de confusión (TEST)
+    # Confusion Matrix (TEST)
     if "y_true_pred" in res and "test" in res["y_true_pred"]:
         y_true, y_pred = res["y_true_pred"]["test"]
         plot_confusion_matrix(y_true, y_pred, classes=(0, 1, 2))
 
-    # 3) Evolución del F1/Loss
+    # F1/Loss evolution
     if "history" in res:
         plot_f1_history(res["history"])
 
-    print("\n=== Pipeline completado. ===")
-    #Cambios finales
+    print("\n=== Pipeline completed. ===")

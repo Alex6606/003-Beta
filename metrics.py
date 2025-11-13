@@ -2,8 +2,8 @@
 # metrics.py
 # ============================================
 """
-Módulo de métricas y reportes de evaluación.
-Incluye funciones de F1 macro, reportes detallados y matriz de confusión 3x3.
+Evaluation metrics and reporting utilities.
+Includes macro-F1, detailed reports, and 3x3 confusion matrix tools.
 """
 
 import numpy as np
@@ -13,8 +13,8 @@ from sklearn.metrics import f1_score, classification_report, confusion_matrix
 
 def macro_f1(y_true, y_pred, labels=(0, 1, 2)) -> float:
     """
-    Calcula Macro-F1 promediando exactamente sobre las clases {0,1,2}.
-    Retorna un float.
+    Computes Macro-F1 averaging across classes {0,1,2}.
+    Returns a float.
     """
     y_true = np.asarray(y_true).ravel()
     y_pred = np.asarray(y_pred).ravel()
@@ -31,7 +31,7 @@ def macro_f1(y_true, y_pred, labels=(0, 1, 2)) -> float:
 
 def print_macro_reports(tag: str, y_true, y_pred):
     """
-    Imprime el F1-macro y un reporte de clasificación detallado.
+    Prints macro-F1 and a detailed classification report.
     """
     f1m = f1_score(y_true, y_pred, average="macro", zero_division=0)
     print(f"{tag} macroF1={f1m:.4f}")
@@ -40,11 +40,11 @@ def print_macro_reports(tag: str, y_true, y_pred):
 
 def evaluate_split_3x3(tag: str, model, X, y):
     """
-    Evalúa el modelo CNN en un split (train, val, test):
+    Evaluates the CNN model on a given dataset split (train, val, test):
       - Accuracy
       - Macro-F1
-      - Distribución de clases predichas
-      - Matriz de confusión normalizada
+      - Predicted class distribution
+      - Normalized 3x3 confusion matrix
     """
     logits = model.predict(X, verbose=0)
     pred = logits.argmax(axis=1)
@@ -63,14 +63,14 @@ def evaluate_split_3x3(tag: str, model, X, y):
     print(f"{tag} | acc={acc:.4f}  macroF1={f1m:.4f}\n  y_pred dist: {dist}")
 
     cm = confusion_matrix(y, pred, labels=[0, 1, 2], normalize='true')
-    print("  Matriz 3x3:\n", pd.DataFrame(cm, index=[0, 1, 2], columns=[0, 1, 2]).round(3))
+    print("  3x3 Matrix:\n", pd.DataFrame(cm, index=[0, 1, 2], columns=[0, 1, 2]).round(3))
 
     return acc, f1m, dist, cm
 
 
 def quick_report(name: str, pred, y):
     """
-    Reporte rápido de exactitud, distribución y matriz normalizada.
+    Quick report with accuracy, distribution, and normalized matrix.
     """
     acc = (pred == y).mean()
     dist = (

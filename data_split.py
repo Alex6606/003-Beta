@@ -2,8 +2,8 @@
 # data_split.py
 # ============================================
 """
-Módulo para dividir datasets financieros en splits cronológicos 60/20/20.
-Evita fugas temporales y garantiza índices ordenados tipo DatetimeIndex.
+Module for splitting financial datasets into chronological 60/20/20 splits.
+Prevents temporal leakage and ensures ordered DatetimeIndex formatting.
 """
 
 import pandas as pd
@@ -16,73 +16,75 @@ def split_60_20_20(
     verbose=True
 ):
     """
-    Divide un DataFrame cronológicamente en 3 subconjuntos (train, test, val).
+    Chronologically splits a DataFrame into 3 non-overlapping subsets:
+    train (60%), test (20%), validation (20%).
 
-    Parámetros
+    Parameters
     ----------
     data : pd.DataFrame
-        Dataset con índice temporal (DatetimeIndex preferido).
-    cols_required : list[str], opcional
-        Columnas que deben existir y no tener NaNs.
+        Dataset with temporal index (DatetimeIndex preferred).
+    cols_required : list[str], optional
+        Columns that must exist and contain no NaNs.
     coerce_datetime : bool
-        Si True, convierte el índice a DatetimeIndex automáticamente.
+        If True, automatically converts the index to DatetimeIndex.
     verbose : bool
-        Si True, imprime tamaños y rangos de fechas.
+        If True, prints split sizes and date ranges.
 
-    Retorna
+    Returns
     -------
     (train, test, val) : tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
-        Tres subconjuntos cronológicos (sin solapamiento ni look-ahead).
+        Three chronological subsets with no overlap and no look-ahead.
     """
+
     if not isinstance(data, pd.DataFrame):
-        raise TypeError("Se esperaba un DataFrame en 'data'.")
+        raise TypeError("Expected a DataFrame for 'data'.")
 
     df = data.copy()
 
-    # --- 1) Validar índice de fechas ---
+    # --- 1) Validate datetime index ---
     if not isinstance(df.index, pd.DatetimeIndex):
         if coerce_datetime:
             try:
                 df.index = pd.to_datetime(df.index)
             except Exception as e:
-                raise ValueError("No se pudo convertir el índice a DatetimeIndex.") from e
+                raise ValueError("Could not convert index to DatetimeIndex.") from e
         else:
-            raise ValueError("El índice debe ser DatetimeIndex.")
+            raise ValueError("Index must be a DatetimeIndex.")
 
-    # --- 2) Ordenar y limpiar duplicados ---
+    # --- 2) Sort and remove duplicates ---
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    # --- 3) Eliminar NaN en columnas requeridas ---
+    # --- 3) Drop NaN based on required columns ---
     if cols_required:
-        faltan = [c for c in cols_required if c not in df.columns]
-        if faltan:
-            raise ValueError(f"Faltan columnas requeridas en 'data': {faltan}")
+        missing = [c for c in cols_required if c not in df.columns]
+        if missing:
+            raise ValueError(f"Required columns not found in 'data': {missing}")
         df = df.dropna(subset=cols_required)
 
-    # --- 4) Calcular divisiones ---
+    # --- 4) Compute split boundaries ---
     n = len(df)
     if n < 50:
-        raise ValueError(f"Demasiado pocas filas ({n}) para un split 60/20/20 robusto.")
+        raise ValueError(f"Too few rows ({n}) for a robust 60/20/20 split.")
 
     i_train_end = (60 * n) // 100
     i_test_end = (80 * n) // 100
 
     train = df.iloc[:i_train_end].copy()
-    test = df.iloc[i_train_end:i_test_end].copy()
-    val = df.iloc[i_test_end:].copy()
+    test  = df.iloc[i_train_end:i_test_end].copy()
+    val   = df.iloc[i_test_end:].copy()
 
-    # --- 5) Verificaciones de sanidad ---
+    # --- 5) Sanity checks ---
     assert train.index.is_monotonic_increasing
     assert test.index.is_monotonic_increasing
     assert val.index.is_monotonic_increasing
     assert len(train) + len(test) + len(val) == n
 
-    # --- 6) Logs opcionales ---
+    # --- 6) Optional logs ---
     if verbose:
-        print("Tamaños → train:", train.shape, "| test:", test.shape, "| val:", val.shape)
-        print("Rangos:")
+        print("Sizes → train:", train.shape, "| test:", test.shape, "| val:", val.shape)
+        print("Date ranges:")
         print("  train:", train.index.min().date(), "→", train.index.max().date())
         print("  test :", test.index.min().date(),  "→", test.index.max().date())
-        print("  val  :", val.index.min().date(),  "→", val.index.max().date())
+        print("  val  :", val.index.min().date(),   "→", val.index.max().date())
 
     return train, test, val
