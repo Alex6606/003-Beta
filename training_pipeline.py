@@ -11,7 +11,6 @@ Incluye:
  - Evaluación final (TEST/VAL)
 """
 from typing import Tuple, Dict, Any
-
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
@@ -441,7 +440,11 @@ def train_eval_one_config(
             try:
                 # usa directamente mlflow.log_dict por si tu helper no escribe el archivo
                 import mlflow
-                mlflow.log_dict({"feature_names": list(map(str, feature_names))}, "feature_stats.json")
+                mlflow.log_dict({
+                    "feature_names": list(map(str, feature_names)),
+                    "feature_types": {f: "float" for f in feature_names},  # o tu dict real
+                    "norm_stats": {f: {"mean": 0, "std": 1} for f in feature_names}  # si no guardas los reales
+                }, "feature_stats.json")
                 print("[MLflow] feature_stats.json loggeado.")
             except Exception as e:
                 print("[WARN] No se pudo sloggear feature_stats.json:", e)
@@ -449,6 +452,7 @@ def train_eval_one_config(
         log_model_keras(model, artifact_path="model")
 
         # 6) 🔴 NUEVO: construir y persistir el URI del modelo (sin Registry)
+        import mlflow  # 👈 AÑADE ESTA LÍNEA AQUÍ
         active_run = mlflow.active_run()
         if active_run is not None:
             model_uri = f"runs:/{active_run.info.run_id}/model"

@@ -76,6 +76,7 @@ if __name__ == "__main__":
         val_idx=idx_val,
         test_idx=idx_test,
         close_series=close_series,
+        feature_names=list(feat_train_n.columns),
     )
 
     print("\n=== Resultados ===")

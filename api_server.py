@@ -111,15 +111,23 @@ def _load_feature_stats_from_path(path: str) -> bool:
         return False
 
 def _load_feature_stats_from_run(run_id: str) -> bool:
-    # 1) descarga directa vía MLflow
+    """
+    Descarga feature_stats.json del run correspondiente y carga los nombres,
+    tipos y normalizadores a las variables globales.
+    """
     try:
-        path = mlflow.artifacts.download_artifacts(f"runs:/{run_id}/feature_stats.json")
+        # ✅ Método correcto para MLflow ≥ 2.0
+        path = mlflow.artifacts.download_artifacts(
+            run_id=run_id,
+            artifact_path="feature_stats.json"
+        )
         if _load_feature_stats_from_path(path):
             print(f"[API] feature_stats.json cargado (MLflow, run_id={run_id})")
             return True
-    except Exception:
-        pass
-    # 2) fallback: búsqueda en filesystem por si estás con file://
+    except Exception as e:
+        print(f"[API][WARN] No se pudo descargar feature_stats.json (run_id={run_id}): {e}")
+
+    # 🔁 Fallback: busca el archivo en filesystem local (modo file://)
     for pat in [
         os.path.join("mlruns", "*", run_id, "artifacts", "feature_stats.json"),
         os.path.join("mlruns", "*", "*", run_id, "artifacts", "feature_stats.json"),
