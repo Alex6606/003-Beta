@@ -204,3 +204,4 @@ if __name__ == "__main__":
         plot_f1_history(res["history"])
 
     print("\n=== Pipeline completado. ===")
+    #Cambios finales
