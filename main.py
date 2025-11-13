@@ -159,6 +159,24 @@ if __name__ == "__main__":
                 print(f" - {k}: {v:.4f}")
             print()
 
+    print("\n=== Métricas Globales (Promedio Train/Val/Test) ===")
+
+    if "backtest" in res:
+        all_splits = list(res["backtest"].values())
+
+
+        def avg(metric):
+            vals = [bt["metrics"].get(metric, 0) for bt in all_splits]
+            return sum(vals) / len(vals)
+
+
+        print(f"Global CAGR:       {avg('CAGR'):.4f}")
+        print(f"Global Sharpe:     {avg('Sharpe'):.4f}")
+        print(f"Global Sortino:    {avg('Sortino'):.4f}")
+        print(f"Global Calmar:     {avg('Calmar'):.4f}")
+        print(f"Global WinRate:    {avg('WinRate'):.4f}")
+        print(f"Global MaxDD:      {avg('MaxDrawdown'):.4f}")
+
     # ---------------------------
     # 5) VISUALIZACIONES
     # ---------------------------
